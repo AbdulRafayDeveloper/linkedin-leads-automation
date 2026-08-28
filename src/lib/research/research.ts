@@ -77,7 +77,7 @@ function extractEmails(html: string): string[] {
   });
 }
 
-function stripHtml(html: string): string {
+export function stripHtml(html: string): string {
   return html
     .replace(/<script[\s\S]*?<\/script>/gi, ' ')
     .replace(/<style[\s\S]*?<\/style>/gi, ' ')
@@ -88,7 +88,7 @@ function stripHtml(html: string): string {
     .trim();
 }
 
-function normalizeToOrigin(url: string): string | null {
+export function normalizeToOrigin(url: string): string | null {
   try {
     const parsed = new URL(url.startsWith('http') ? url : `https://${url}`);
     return parsed.origin;
@@ -218,6 +218,10 @@ export interface FindCompanyWebsiteOptions {
   aiModels?: AiChatModel[];
   pageProbe?: PageProbe;
   maxCandidatesToVerify?: number;
+  // Origins to skip even if a source suggests them again — used when a
+  // caller already tried (and rejected) a candidate and wants a different
+  // one on the next attempt.
+  excludeOrigins?: Set<string> | string[];
 }
 
 function extractModelText(raw: { content: unknown } | string): string {
@@ -272,7 +276,7 @@ const BOT_BLOCK_STATUSES = new Set([401, 403, 429, 503]);
 // which would otherwise look exactly like a real name-match to the scorer
 // above — so it must be excluded outright rather than scored normally.
 const PARKING_PAGE_SIGNATURES =
-  /(domain (is |may be )?for sale|buy this domain|make an offer|this domain is parked|domain parking|inquire about this domain|checkout\.namecheap|hugedomains|afternic|sedo\.com|dan\.com|spaceship\.com|godaddy\.com\/domains|buydomains)/i;
+  /(domain (is |may be )?for sale|buy this domain|make an offer|this domain is parked|domain parking|inquire about this domain|checkout\.namecheap|hugedomains|afternic|sedo\.com|dan\.com|spaceship\.com|godaddy\.com\/domains|buydomains|welcome to nginx|apache2 (ubuntu )?default page|it works!|just another wordpress site|index of \/|coming soon|under construction|default web site page|this site can.t be reached|future home of something quite cool)/i;
 
 // Scores how likely a probed page is to actually be this specific company's
 // site. A normal page that mentions the company name (and ideally the lead's
@@ -320,8 +324,10 @@ function scoreProbe(probe: PageProbeResult, companyName: string, context: Compan
  * against the company name and the lead's own location/industry context
  * before being trusted, so a same-named-but-unrelated company (or a blindly
  * guessed .com that isn't this company) doesn't win just by being found
- * first — a real website that exists on the web should still surface even
- * when one source (a search engine, a guessed TLD) comes back empty or wrong.
+ * first. A candidate is only ever returned if it could be confirmed to
+ * exist in some way (real content, or even just a bot-protection page) —
+ * a domain that never responded at all is never handed back, since that
+ * would just be a guessed link a real visitor's browser cannot load.
  */
 export async function findCompanyWebsite(
   companyName: string,
@@ -335,10 +341,11 @@ export async function findCompanyWebsite(
   const searchEngines = options.searchEngines ?? [duckDuckGoSearch, bingSearch];
   const pageProbe = options.pageProbe ?? defaultPageProbe;
   const maxCandidates = options.maxCandidatesToVerify ?? 6;
+  const excluded = options.excludeOrigins instanceof Set ? options.excludeOrigins : new Set(options.excludeOrigins ?? []);
 
   const queries = buildCandidateQueries(companyName, context);
   const queriesTried: string[] = [];
-  const seen = new Set<string>();
+  const seen = new Set<string>(excluded);
   const prioritized: string[] = [];
 
   const addCandidate = (rawUrl: string): void => {
@@ -394,10 +401,11 @@ export async function findCompanyWebsite(
 
   const reachable = scored.filter((candidate) => candidate.score > 0);
   if (reachable.length === 0) {
-    // Nothing could be verified as existing at all (likely a scraper block,
-    // not proof the site doesn't exist) — still surface the best guess
-    // rather than nothing.
-    return { website: toVerify[0], confidence: 'LOW', queriesTried };
+    // Nothing could be verified as existing at all — no content, no bot
+    // block, not even a bare connection. Returning a candidate here would be
+    // handing back a guessed domain that a real visitor's browser cannot
+    // load, which is worse than admitting the website could not be found.
+    return { website: null, confidence: 'LOW', queriesTried };
   }
 
   reachable.sort((a, b) => b.score - a.score);

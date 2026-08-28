@@ -81,7 +81,16 @@ export async function enrichLeadApi(id: string): Promise<{ lead: LeadRecord }> {
 
 export async function findCompanyWebsiteApi(
   id: string
-): Promise<{ lead: LeadRecord; website: string | null }> {
+): Promise<{ lead: LeadRecord; website: string | null; verified: boolean }> {
   const response = await fetch(`${API_BASE}/leads/${id}/find-website`, { method: 'POST' });
+  return handle(response);
+}
+
+export async function addLeadEmailApi(id: string, email: string): Promise<{ lead: LeadRecord }> {
+  const response = await fetch(`${API_BASE}/leads/${id}/emails`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email }),
+  });
   return handle(response);
 }

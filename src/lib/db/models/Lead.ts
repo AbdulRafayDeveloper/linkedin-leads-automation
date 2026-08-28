@@ -62,6 +62,7 @@ export interface LeadDocument extends Document {
   sourceText: string | null;
   emails: Types.DocumentArray<EmailEntrySubdocument>;
   websiteStatus: WebsiteStatus;
+  websiteVerified: boolean | null;
   crawlStatus: CrawlStatus;
   emailDiscoveryStatus: EmailDiscoveryStatus;
   enrichmentStatus: EnrichmentStatus;
@@ -82,7 +83,7 @@ const EmailEntrySchema = new Schema<EmailEntrySubdocument>(
     },
     source: {
       type: String,
-      enum: ['LEAD_PROFILE', 'COMPANY_WEBSITE'],
+      enum: ['LEAD_PROFILE', 'COMPANY_WEBSITE', 'MANUAL'],
       required: true,
     },
     sourceUrl: { type: String, default: null },
@@ -182,6 +183,7 @@ const LeadSchema = new Schema<LeadDocument>(
       enum: ['not_started', 'found', 'not_found'],
       default: 'not_started',
     },
+    websiteVerified: { type: Boolean, default: null },
     crawlStatus: {
       type: String,
       enum: ['not_started', 'in_progress', 'completed', 'failed', 'skipped'],

@@ -7,7 +7,7 @@ export type SentStatus = 'NOT_SENT' | 'DRAFT_CREATED' | 'SENT' | 'BOUNCED';
 export type CompanyConfidence = 'HIGH' | 'MEDIUM' | 'LOW';
 
 // Multi-email enrichment
-export type EmailEntrySource = 'LEAD_PROFILE' | 'COMPANY_WEBSITE';
+export type EmailEntrySource = 'LEAD_PROFILE' | 'COMPANY_WEBSITE' | 'MANUAL';
 export type EmailType =
   | 'PERSONAL'
   | 'SALES'
@@ -162,6 +162,7 @@ export interface LeadRecord {
   sourceText: string | null;
   emails: EmailEntry[];
   websiteStatus: WebsiteStatus;
+  websiteVerified: boolean | null;
   crawlStatus: CrawlStatus;
   emailDiscoveryStatus: EmailDiscoveryStatus;
   enrichmentStatus: EnrichmentStatus;

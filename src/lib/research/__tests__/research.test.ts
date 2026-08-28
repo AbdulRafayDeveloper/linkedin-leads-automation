@@ -229,13 +229,13 @@ describe('findCompanyWebsite', () => {
     expect(result.confidence).toBe('MEDIUM');
   });
 
-  it('still returns a best-guess candidate when nothing can be verified as existing', async () => {
+  it('never returns a candidate that could not be verified as existing at all (no dummy/broken domains)', async () => {
     const result = await findCompanyWebsite(
       'Northwind Robotics',
       {},
       { searchEngines: [fakeEngine([])], aiModels: [], pageProbe: probeNever }
     );
-    expect(result.website).toBe('https://northwindrobotics.com');
+    expect(result.website).toBeNull();
     expect(result.confidence).toBe('LOW');
   });
 

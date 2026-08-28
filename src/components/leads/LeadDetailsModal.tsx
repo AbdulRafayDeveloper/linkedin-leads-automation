@@ -41,6 +41,7 @@ const ENRICHMENT_STATUS_LABEL: Record<string, string> = {
 const EMAIL_SOURCE_LABEL: Record<EmailEntry['source'], string> = {
   LEAD_PROFILE: 'Lead email',
   COMPANY_WEBSITE: 'Company website',
+  MANUAL: 'Added manually',
 };
 
 function initials(name: string) {

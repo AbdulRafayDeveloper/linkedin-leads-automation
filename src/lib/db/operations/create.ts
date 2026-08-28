@@ -62,6 +62,7 @@ export async function createLead(processingResult: ProcessingResult): Promise<Le
     sourceText: lead.sourceText,
     emails: initialEmails,
     websiteStatus: 'not_started',
+    websiteVerified: null,
     crawlStatus: 'not_started',
     emailDiscoveryStatus: initialEmails.length > 0 ? 'emails_found' : 'not_started',
     enrichmentStatus: 'QUEUED',

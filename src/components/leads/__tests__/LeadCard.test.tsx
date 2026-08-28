@@ -64,6 +64,7 @@ const lead: LeadRecord = {
     },
   ],
   websiteStatus: 'found',
+  websiteVerified: null,
   crawlStatus: 'completed',
   emailDiscoveryStatus: 'emails_found',
   enrichmentStatus: 'COMPLETED',

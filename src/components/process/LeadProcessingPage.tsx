@@ -2,14 +2,28 @@
 
 import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
-import { enrichLeadApi, fetchLead, findCompanyWebsiteApi, processLeadApi } from '@/lib/api/client';
+import {
+  addLeadEmailApi,
+  enrichLeadApi,
+  fetchLead,
+  findCompanyWebsiteApi,
+  processLeadApi,
+  updateLeadApi,
+} from '@/lib/api/client';
 import type { EmailEntry, LeadRecord, ProcessingResult } from '@/lib/types/lead';
 import { PageHeader } from '@/components/ui/PageHeader';
 import { Card, CardContent, CardHeader } from '@/components/ui/Card';
-import { Textarea } from '@/components/ui/Input';
+import { Input, Textarea } from '@/components/ui/Input';
 import Button, { buttonClasses } from '@/components/ui/Button';
 import { StatusBadge } from '@/components/ui/Badge';
-import { AlertTriangleIcon, ArrowRightIcon, CheckCircleIcon, CopyIcon, LoaderIcon } from '@/components/ui/Icons';
+import {
+  AlertTriangleIcon,
+  ArrowRightIcon,
+  CheckCircleIcon,
+  CopyIcon,
+  EditIcon,
+  LoaderIcon,
+} from '@/components/ui/Icons';
 import { cn } from '@/lib/utils/cn';
 
 const STEPS = [
@@ -38,6 +52,7 @@ const ENRICHMENT_STATUS_LABEL: Record<string, string> = {
 const EMAIL_SOURCE_LABEL: Record<EmailEntry['source'], string> = {
   LEAD_PROFILE: 'Lead profile',
   COMPANY_WEBSITE: 'Company website',
+  MANUAL: 'Added manually',
 };
 
 function InfoRow({ label, value }: { label: string; value: string | null | undefined }) {
@@ -50,26 +65,6 @@ function InfoRow({ label, value }: { label: string; value: string | null | undef
   );
 }
 
-function InfoLinkRow({ label, href }: { label: string; href: string | null | undefined }) {
-  if (!href) return null;
-  const normalizedHref = /^https?:\/\//i.test(href) ? href : `https://${href}`;
-  return (
-    <>
-      <dt className="text-slate-500">{label}</dt>
-      <dd className="text-slate-800">
-        <a
-          href={normalizedHref}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-indigo-600 underline decoration-indigo-200 underline-offset-2 hover:text-indigo-700"
-        >
-          {href}
-        </a>
-      </dd>
-    </>
-  );
-}
-
 function CompanyWebsiteRow({
   leadId,
   initialWebsite,
@@ -78,29 +73,95 @@ function CompanyWebsiteRow({
   initialWebsite: string | null;
 }) {
   const [website, setWebsite] = useState<string | null>(initialWebsite);
-  const [searching, setSearching] = useState(false);
-  const [notFound, setNotFound] = useState(false);
+  const [verified, setVerified] = useState<boolean | null>(null);
+  // Always starts "searching" (via lazy initializer, not an effect): even a
+  // website that already came back from processing still needs the
+  // crawl-and-AI-verify pass below before it can be trusted.
+  const [searching, setSearching] = useState(true);
+  const [searchTried, setSearchTried] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState('');
+  const [saving, setSaving] = useState(false);
 
-  if (website) {
-    return <InfoLinkRow label="Company Website" href={website} />;
-  }
-
-  const handleSearch = async () => {
+  const runSearch = async () => {
     setSearching(true);
     setError(null);
-    setNotFound(false);
     try {
-      const { website: found } = await findCompanyWebsiteApi(leadId);
-      if (found) {
-        setWebsite(found);
-      } else {
-        setNotFound(true);
-      }
+      const { website: found, verified: isVerified } = await findCompanyWebsiteApi(leadId);
+      setWebsite(found);
+      setVerified(found ? isVerified : null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to search for company website');
     } finally {
       setSearching(false);
+      setSearchTried(true);
+    }
+  };
+
+  // Whether a website already came back from processing or not, always
+  // crawl its homepage and ask AI to confirm it actually belongs to this
+  // company (matching name and location) with no click needed. If it
+  // doesn't match, a fresh candidate is searched for and checked instead,
+  // automatically, until one verifies or the attempts run out.
+  useEffect(() => {
+    let cancelled = false;
+
+    findCompanyWebsiteApi(leadId)
+      .then(({ website: found, verified: isVerified }) => {
+        if (!cancelled) {
+          setWebsite(found);
+          setVerified(found ? isVerified : null);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : 'Failed to verify company website');
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setSearching(false);
+          setSearchTried(true);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const startEdit = () => {
+    setError(null);
+    setDraft(website || '');
+    setEditing(true);
+  };
+
+  const cancelEdit = () => {
+    setEditing(false);
+    setError(null);
+  };
+
+  const saveEdit = async () => {
+    const trimmed = draft.trim();
+    if (!trimmed) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const { lead: updated } = await updateLeadApi(leadId, {
+        currentCompanyWebsite: trimmed,
+        websiteStatus: 'found',
+        websiteVerified: null,
+      });
+      setWebsite(updated.currentCompanyWebsite);
+      // A manually entered URL is trusted as-is, not AI-verified.
+      setVerified(null);
+      setEditing(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save website');
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -108,15 +169,78 @@ function CompanyWebsiteRow({
     <>
       <dt className="text-slate-500">Company Website</dt>
       <dd className="text-slate-800">
-        <div className="flex items-center gap-2">
-          <span className="text-slate-500">Not found</span>
-          <Button type="button" variant="outline" size="sm" onClick={handleSearch} disabled={searching}>
-            {searching && <LoaderIcon width={12} height={12} />}
-            {searching ? 'Searching…' : 'Search'}
-          </Button>
-        </div>
-        {notFound && (
-          <p className="mt-1 text-xs text-slate-500">No official website could be found on the web.</p>
+        {editing ? (
+          <div className="flex items-center gap-2">
+            <Input
+              type="text"
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              placeholder="https://example.com"
+              className="h-8 py-1"
+              autoFocus
+            />
+            <Button type="button" size="sm" onClick={saveEdit} disabled={saving || !draft.trim()}>
+              {saving ? 'Saving…' : 'Save'}
+            </Button>
+            <Button type="button" variant="outline" size="sm" onClick={cancelEdit} disabled={saving}>
+              Cancel
+            </Button>
+          </div>
+        ) : website ? (
+          <div className="flex flex-wrap items-center gap-2">
+            <a
+              href={/^https?:\/\//i.test(website) ? website : `https://${website}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="truncate text-indigo-600 underline decoration-indigo-200 underline-offset-2 hover:text-indigo-700"
+            >
+              {website}
+            </a>
+            {verified === true && (
+              <span className="flex shrink-0 items-center gap-1 rounded-full bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700">
+                <CheckCircleIcon width={10} height={10} />
+                Verified
+              </span>
+            )}
+            {searching && <LoaderIcon width={12} height={12} className="shrink-0 text-slate-400" />}
+            <button
+              type="button"
+              onClick={startEdit}
+              className="shrink-0 text-slate-400 hover:text-slate-600"
+              aria-label="Edit company website"
+            >
+              <EditIcon width={13} height={13} />
+            </button>
+          </div>
+        ) : (
+          <div className="flex flex-col gap-1">
+            <div className="flex items-center gap-2">
+              {searching ? (
+                <>
+                  <LoaderIcon width={12} height={12} />
+                  <span className="text-slate-500">Searching & verifying…</span>
+                </>
+              ) : (
+                <>
+                  <span className="text-slate-500">Not found</span>
+                  <Button type="button" variant="outline" size="sm" onClick={runSearch}>
+                    Search
+                  </Button>
+                </>
+              )}
+              <button
+                type="button"
+                onClick={startEdit}
+                className="shrink-0 text-slate-400 hover:text-slate-600"
+                aria-label="Edit company website"
+              >
+                <EditIcon width={13} height={13} />
+              </button>
+            </div>
+            {searchTried && !searching && (
+              <p className="text-xs text-slate-500">No official website could be found on the web.</p>
+            )}
+          </div>
         )}
         {error && <p className="mt-1 text-xs text-red-600">{error}</p>}
       </dd>
@@ -154,6 +278,9 @@ function FindEmailsSection({ leadId, initialLead }: { leadId: string; initialLea
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [started, setStarted] = useState(false);
+  const [manualEmail, setManualEmail] = useState('');
+  const [addingEmail, setAddingEmail] = useState(false);
+  const [addEmailError, setAddEmailError] = useState<string | null>(null);
   const leadIdRef = useRef(leadId);
   useEffect(() => {
     leadIdRef.current = leadId;
@@ -191,6 +318,22 @@ function FindEmailsSection({ leadId, initialLead }: { leadId: string; initialLea
 
   const inProgress = started && !TERMINAL_ENRICHMENT_STATUSES.has(lead.enrichmentStatus);
 
+  const handleAddEmail = async () => {
+    const trimmed = manualEmail.trim();
+    if (!trimmed) return;
+    setAddingEmail(true);
+    setAddEmailError(null);
+    try {
+      const { lead: updated } = await addLeadEmailApi(leadId, trimmed);
+      setLead(updated);
+      setManualEmail('');
+    } catch (err) {
+      setAddEmailError(err instanceof Error ? err.message : 'Failed to add email');
+    } finally {
+      setAddingEmail(false);
+    }
+  };
+
   return (
     <div className="mt-4 rounded-md border border-slate-200 p-3.5 text-sm">
       <div className="mb-2.5 flex items-center justify-between">
@@ -206,6 +349,33 @@ function FindEmailsSection({ leadId, initialLead }: { leadId: string; initialLea
           {inProgress ? 'Searching…' : starting ? 'Starting…' : 'Find Emails'}
         </Button>
       </div>
+
+      <div className="mb-2.5 flex items-center gap-2">
+        <Input
+          type="email"
+          value={manualEmail}
+          onChange={(e) => setManualEmail(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              handleAddEmail();
+            }
+          }}
+          placeholder="Add an email address"
+          className="h-8 py-1"
+        />
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={handleAddEmail}
+          disabled={addingEmail || !manualEmail.trim()}
+        >
+          {addingEmail && <LoaderIcon width={12} height={12} />}
+          {addingEmail ? 'Adding…' : 'Add'}
+        </Button>
+      </div>
+      {addEmailError && <p className="mb-2 text-xs text-red-600">{addEmailError}</p>}
 
       {error && <p className="mb-2 text-xs text-red-600">{error}</p>}
 
@@ -350,17 +520,17 @@ export default function LeadProcessingPage() {
             <FindEmailsSection key={result.lead._id} leadId={result.lead._id} initialLead={result.lead} />
 
             <dl className="grid grid-cols-2 gap-y-2 text-sm mt-4">
-              <InfoRow label="Name" value={result.result.lead.fullName} />
-              <InfoRow label="Title" value={result.result.lead.currentTitle} />
-              <InfoRow label="Company" value={result.result.lead.currentCompany} />
-              <InfoRow label="Location" value={result.result.lead.location} />
-              <InfoRow label="Company Location" value={result.result.lead.currentCompanyLocation} />
               <CompanyWebsiteRow
                 key={result.lead._id}
                 leadId={result.lead._id}
                 initialWebsite={result.result.company.officialWebsite || result.result.lead.currentCompanyWebsite}
               />
               <InfoRow label="Lead Email" value={result.result.emailDiscovery.email || 'Not found'} />
+              <InfoRow label="Company" value={result.result.lead.currentCompany} />
+              <InfoRow label="Company Location" value={result.result.lead.currentCompanyLocation} />
+              <InfoRow label="Name" value={result.result.lead.fullName} />
+              <InfoRow label="Title" value={result.result.lead.currentTitle} />
+              <InfoRow label="Location" value={result.result.lead.location} />
               <InfoRow
                 label="Processing Time"
                 value={`${(result.result.totalProcessingTimeMs / 1000).toFixed(1)}s`}
