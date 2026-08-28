@@ -47,7 +47,7 @@
 - **Description:** MongoDB Atlas connection string
 - **Required:** Yes (replaces GOOGLE_SHEETS_ID)
 - **Value Format:** `mongodb+srv://username:password@cluster.mongodb.net/database?retryWrites=true&w=majority`
-- **Example:** `mongodb+srv://user123:pass456@lead-engine.mongodb.net/leads?retryWrites=true&w=majority`
+- **Example:** `mongodb+srv://<your-username>:<your-password>@<your-cluster>.mongodb.net/leads?retryWrites=true&w=majority`
 - **Obtain From:**
   1. Go to https://www.mongodb.com/cloud/atlas/
   2. Sign up for free account (or log in)
@@ -256,7 +256,7 @@ Original:
 mongodb+srv://<username>:<password>@cluster.mongodb.net/myFirstDatabase?retryWrites=true&w=majority
 
 Becomes:
-mongodb+srv://user123:myPassword123@cluster.mongodb.net/leads?retryWrites=true&w=majority
+mongodb+srv://<your-username>:<your-password>@cluster.mongodb.net/leads?retryWrites=true&w=majority
 ```
 
 7. Paste into `.env.local` as MONGODB_URI
