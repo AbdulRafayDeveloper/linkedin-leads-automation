@@ -1,7 +1,10 @@
-import type { NextRequest } from 'next/server';
+import { after, type NextRequest } from 'next/server';
 import { processLeadContent } from '@/lib/processLead';
 import { createLead } from '@/lib/db/operations/create';
+import { enrichLead } from '@/lib/enrichment/enrichLead';
 import { jsonError, jsonOk } from '@/lib/api/response';
+
+export const maxDuration = 60;
 
 export async function POST(request: NextRequest) {
   try {
@@ -12,6 +15,9 @@ export async function POST(request: NextRequest) {
 
     const result = await processLeadContent(body.content);
     const saved = await createLead(result);
+
+    const leadId = saved._id.toString();
+    after(() => enrichLead(leadId));
 
     return jsonOk({ result, lead: saved }, 201);
   } catch (error) {

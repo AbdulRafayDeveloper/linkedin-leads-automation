@@ -1,12 +1,31 @@
-import mongoose, { Schema, type Document, type Model } from 'mongoose';
+import mongoose, { Schema, type Document, type Model, type Types } from 'mongoose';
 import type {
   ApprovalStatus,
+  CrawlStatus,
   EmailConfidence,
+  EmailDiscoveryStatus,
+  EmailEntrySource,
+  EmailEntryValidationStatus,
   EmailSource,
+  EmailType,
+  EnrichmentStatus,
   ProcessingStatus,
   SentStatus,
   ValidationStatus,
+  WebsiteStatus,
 } from '@/lib/types/lead';
+
+export interface EmailEntrySubdocument {
+  _id: Types.ObjectId;
+  email: string;
+  source: EmailEntrySource;
+  sourceUrl: string | null;
+  emailType: EmailType;
+  validationStatus: EmailEntryValidationStatus;
+  validationDetails: string | null;
+  discoveredAt: Date;
+  validatedAt: Date | null;
+}
 
 export interface LeadDocument extends Document {
   fullName: string;
@@ -40,7 +59,48 @@ export interface LeadDocument extends Document {
   sentAt: Date | null;
   processingTimeMs: number | null;
   sourceText: string | null;
+  emails: Types.DocumentArray<EmailEntrySubdocument>;
+  websiteStatus: WebsiteStatus;
+  crawlStatus: CrawlStatus;
+  emailDiscoveryStatus: EmailDiscoveryStatus;
+  enrichmentStatus: EnrichmentStatus;
+  enrichmentError: string | null;
 }
+
+const EmailEntrySchema = new Schema<EmailEntrySubdocument>(
+  {
+    email: {
+      type: String,
+      required: true,
+      trim: true,
+      lowercase: true,
+      validate: {
+        validator: (value: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value),
+        message: 'Invalid email format',
+      },
+    },
+    source: {
+      type: String,
+      enum: ['LEAD_PROFILE', 'COMPANY_WEBSITE'],
+      required: true,
+    },
+    sourceUrl: { type: String, default: null },
+    emailType: {
+      type: String,
+      enum: ['PERSONAL', 'SALES', 'SUPPORT', 'GENERAL', 'HR', 'PRESS', 'LEGAL', 'UNKNOWN'],
+      default: 'UNKNOWN',
+    },
+    validationStatus: {
+      type: String,
+      enum: ['pending', 'valid', 'invalid', 'unknown', 'risky'],
+      default: 'pending',
+    },
+    validationDetails: { type: String, default: null },
+    discoveredAt: { type: Date, default: () => new Date() },
+    validatedAt: { type: Date, default: null },
+  },
+  { _id: true }
+);
 
 const LeadSchema = new Schema<LeadDocument>(
   {
@@ -113,6 +173,39 @@ const LeadSchema = new Schema<LeadDocument>(
     sentAt: { type: Date, default: null },
     processingTimeMs: { type: Number, default: null },
     sourceText: { type: String, default: null },
+
+    emails: { type: [EmailEntrySchema], default: [] },
+    websiteStatus: {
+      type: String,
+      enum: ['not_started', 'found', 'not_found'],
+      default: 'not_started',
+    },
+    crawlStatus: {
+      type: String,
+      enum: ['not_started', 'in_progress', 'completed', 'failed', 'skipped'],
+      default: 'not_started',
+    },
+    emailDiscoveryStatus: {
+      type: String,
+      enum: ['not_started', 'in_progress', 'emails_found', 'no_emails_found', 'failed'],
+      default: 'not_started',
+    },
+    enrichmentStatus: {
+      type: String,
+      enum: [
+        'QUEUED',
+        'IDENTIFYING_COMPANY',
+        'FINDING_WEBSITE',
+        'CRAWLING',
+        'EXTRACTING',
+        'VALIDATING',
+        'COMPLETED',
+        'FAILED',
+      ],
+      default: 'QUEUED',
+      index: true,
+    },
+    enrichmentError: { type: String, default: null },
   },
   { timestamps: true }
 );
@@ -120,6 +213,7 @@ const LeadSchema = new Schema<LeadDocument>(
 LeadSchema.index({ email: 1 }, { sparse: true });
 LeadSchema.index({ validationStatus: 1 });
 LeadSchema.index({ createdAt: -1 });
+LeadSchema.index({ 'emails.email': 1 });
 
 export const Lead: Model<LeadDocument> =
   (mongoose.models.Lead as Model<LeadDocument>) ||

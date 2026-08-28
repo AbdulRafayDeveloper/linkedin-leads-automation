@@ -5,9 +5,15 @@ import { NextRequest } from 'next/server';
 import { POST } from '../route';
 import { processLeadContent } from '@/lib/processLead';
 import { createLead } from '@/lib/db/operations/create';
+import { enrichLead } from '@/lib/enrichment/enrichLead';
 
 jest.mock('@/lib/processLead');
 jest.mock('@/lib/db/operations/create');
+jest.mock('@/lib/enrichment/enrichLead');
+jest.mock('next/server', () => ({
+  ...jest.requireActual('next/server'),
+  after: jest.fn((callback: () => unknown) => callback()),
+}));
 
 describe('POST /api/process', () => {
   beforeEach(() => jest.clearAllMocks());
@@ -34,6 +40,7 @@ describe('POST /api/process', () => {
     expect(response.status).toBe(201);
     expect(body.success).toBe(true);
     expect(body.lead.fullName).toBe('Gus Gollings');
+    expect(enrichLead).toHaveBeenCalledWith('1');
   });
 
   it('rejects a request with no content', async () => {

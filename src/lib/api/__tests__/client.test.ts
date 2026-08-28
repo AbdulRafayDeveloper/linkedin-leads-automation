@@ -1,6 +1,7 @@
 import {
   bulkDeleteLeadsApi,
   deleteLeadApi,
+  enrichLeadApi,
   fetchLead,
   fetchLeads,
   processLeadApi,
@@ -67,6 +68,16 @@ describe('api client', () => {
       expect.objectContaining({ method: 'POST' })
     );
     expect(result.lead._id).toBe('1');
+  });
+
+  it('enrichLeadApi posts to the enrich endpoint for a lead', async () => {
+    mockFetchOnce({ success: true, lead: { _id: '1', enrichmentStatus: 'QUEUED' } });
+    const result = await enrichLeadApi('1');
+    expect(global.fetch).toHaveBeenCalledWith(
+      expect.stringContaining('/leads/1/enrich'),
+      expect.objectContaining({ method: 'POST' })
+    );
+    expect(result.lead.enrichmentStatus).toBe('QUEUED');
   });
 
   it('throws when the API responds with success: false', async () => {

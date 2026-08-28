@@ -1,9 +1,12 @@
-import type { NextRequest } from 'next/server';
+import { after, type NextRequest } from 'next/server';
 import { getFilteredLeads } from '@/lib/db/operations/read';
 import { deleteLeadsByIds } from '@/lib/db/operations/delete';
 import { createLead } from '@/lib/db/operations/create';
+import { enrichLead } from '@/lib/enrichment/enrichLead';
 import { jsonError, jsonOk } from '@/lib/api/response';
 import type { ApprovalStatus, ProcessingResult, SentStatus, ValidationStatus } from '@/lib/types/lead';
+
+export const maxDuration = 60;
 
 export async function GET(request: NextRequest) {
   try {
@@ -37,6 +40,10 @@ export async function POST(request: NextRequest) {
       return jsonError('Missing required lead data', 422);
     }
     const saved = await createLead(body);
+
+    const leadId = saved._id.toString();
+    after(() => enrichLead(leadId));
+
     return jsonOk({ lead: saved }, 201);
   } catch (error) {
     return jsonError(error instanceof Error ? error.message : 'Failed to create lead', 500);

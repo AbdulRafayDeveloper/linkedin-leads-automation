@@ -6,6 +6,54 @@ export type ProcessingStatus = 'COMPLETE' | 'ERROR';
 export type SentStatus = 'NOT_SENT' | 'DRAFT_CREATED' | 'SENT' | 'BOUNCED';
 export type CompanyConfidence = 'HIGH' | 'MEDIUM' | 'LOW';
 
+// Multi-email enrichment
+export type EmailEntrySource = 'LEAD_PROFILE' | 'COMPANY_WEBSITE';
+export type EmailType =
+  | 'PERSONAL'
+  | 'SALES'
+  | 'SUPPORT'
+  | 'GENERAL'
+  | 'HR'
+  | 'PRESS'
+  | 'LEGAL'
+  | 'UNKNOWN';
+export type EmailEntryValidationStatus = 'pending' | 'valid' | 'invalid' | 'unknown' | 'risky';
+
+export interface EmailEntry {
+  email: string;
+  source: EmailEntrySource;
+  sourceUrl: string | null;
+  emailType: EmailType;
+  validationStatus: EmailEntryValidationStatus;
+  validationDetails: string | null;
+  discoveredAt: string;
+  validatedAt: string | null;
+}
+
+export type WebsiteStatus = 'not_started' | 'found' | 'not_found';
+export type CrawlStatus = 'not_started' | 'in_progress' | 'completed' | 'failed' | 'skipped';
+export type EmailDiscoveryStatus =
+  | 'not_started'
+  | 'in_progress'
+  | 'emails_found'
+  | 'no_emails_found'
+  | 'failed';
+export type EnrichmentStatus =
+  | 'QUEUED'
+  | 'IDENTIFYING_COMPANY'
+  | 'FINDING_WEBSITE'
+  | 'CRAWLING'
+  | 'EXTRACTING'
+  | 'VALIDATING'
+  | 'COMPLETED'
+  | 'FAILED';
+
+export interface CrawledEmail {
+  email: string;
+  sourceUrl: string;
+  emailType: EmailType;
+}
+
 export const UNCERTAIN = 'UNCERTAIN' as const;
 
 export interface ParsedLead {
@@ -110,6 +158,12 @@ export interface LeadRecord {
   sentAt: string | null;
   processingTimeMs: number | null;
   sourceText: string | null;
+  emails: EmailEntry[];
+  websiteStatus: WebsiteStatus;
+  crawlStatus: CrawlStatus;
+  emailDiscoveryStatus: EmailDiscoveryStatus;
+  enrichmentStatus: EnrichmentStatus;
+  enrichmentError: string | null;
 }
 
 export interface PaginatedResult<T> {

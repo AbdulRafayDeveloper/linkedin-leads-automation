@@ -1,8 +1,8 @@
 'use client';
 
-import { useState } from 'react';
-import type { ApprovalStatus, LeadRecord } from '@/lib/types/lead';
-import { deleteLeadApi, updateLeadApi } from '@/lib/api/client';
+import { useEffect, useRef, useState } from 'react';
+import type { ApprovalStatus, EmailEntry, LeadRecord } from '@/lib/types/lead';
+import { deleteLeadApi, enrichLeadApi, fetchLead, updateLeadApi } from '@/lib/api/client';
 
 interface LeadDetailsModalProps {
   lead: LeadRecord;
@@ -11,15 +11,129 @@ interface LeadDetailsModalProps {
   onDeleted: (id: string) => void;
 }
 
+const TERMINAL_ENRICHMENT_STATUSES = new Set(['COMPLETED', 'FAILED']);
+
+const ENRICHMENT_STATUS_LABEL: Record<string, string> = {
+  QUEUED: 'Queued',
+  IDENTIFYING_COMPANY: 'Identifying current company',
+  FINDING_WEBSITE: 'Finding official website',
+  CRAWLING: 'Crawling company website',
+  EXTRACTING: 'Extracting emails',
+  VALIDATING: 'Validating emails',
+  COMPLETED: 'Completed',
+  FAILED: 'Failed',
+};
+
+const EMAIL_SOURCE_LABEL: Record<EmailEntry['source'], string> = {
+  LEAD_PROFILE: 'Lead email',
+  COMPANY_WEBSITE: 'Company website',
+};
+
+function EmailsSection({ lead, onEnrich, enriching }: { lead: LeadRecord; onEnrich: () => void; enriching: boolean }) {
+  const isTerminal = TERMINAL_ENRICHMENT_STATUSES.has(lead.enrichmentStatus);
+
+  return (
+    <div className="rounded-md border border-neutral-200 p-3 text-sm dark:border-neutral-800">
+      <div className="mb-2 flex items-center justify-between">
+        <p className="font-medium">Emails</p>
+        <button
+          type="button"
+          onClick={onEnrich}
+          disabled={enriching || !isTerminal}
+          className="rounded-md border border-neutral-300 px-2 py-1 text-xs font-medium hover:bg-neutral-100 disabled:opacity-50 dark:border-neutral-700 dark:hover:bg-neutral-800"
+        >
+          {enriching ? 'Queuing…' : 'Re-run enrichment'}
+        </button>
+      </div>
+
+      {!isTerminal && (
+        <p className="mb-2 text-xs text-neutral-500">
+          Enrichment: {ENRICHMENT_STATUS_LABEL[lead.enrichmentStatus] || lead.enrichmentStatus}…
+        </p>
+      )}
+      {lead.enrichmentStatus === 'FAILED' && lead.enrichmentError && (
+        <p className="mb-2 text-xs text-red-600">Enrichment failed: {lead.enrichmentError}</p>
+      )}
+
+      {lead.emails.length === 0 ? (
+        <p className="text-neutral-500">
+          {isTerminal ? 'No public emails discovered yet.' : 'Searching for emails…'}
+        </p>
+      ) : (
+        <ul className="flex flex-col gap-2">
+          {lead.emails.map((entry) => (
+            <li key={entry.email + entry.discoveredAt}>
+              <div className="flex items-start gap-2">
+                <span aria-hidden="true">{entry.validationStatus === 'valid' ? '✓' : entry.validationStatus === 'invalid' ? '✗' : '•'}</span>
+                <div>
+                  <p className="font-medium">{entry.email}</p>
+                  <p className="text-xs text-neutral-500">
+                    {entry.validationStatus === 'valid'
+                      ? 'Valid'
+                      : entry.validationStatus === 'invalid'
+                        ? 'Invalid'
+                        : entry.validationStatus === 'risky'
+                          ? 'Risky'
+                          : entry.validationStatus === 'pending'
+                            ? 'Validating…'
+                            : 'Unknown'}
+                    {' · '}
+                    {EMAIL_SOURCE_LABEL[entry.source]}
+                    {entry.emailType !== 'UNKNOWN' ? ` · ${entry.emailType}` : ''}
+                  </p>
+                  {entry.sourceUrl && (
+                    <p className="text-xs text-neutral-400">Source: {entry.sourceUrl}</p>
+                  )}
+                </div>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 export default function LeadDetailsModal({ lead, onClose, onUpdated, onDeleted }: LeadDetailsModalProps) {
   const [email, setEmail] = useState(lead.email || '');
   const [subject, setSubject] = useState(lead.emailSubject || '');
   const [body, setBody] = useState(lead.emailBody || '');
   const [approvalStatus, setApprovalStatus] = useState<ApprovalStatus>(lead.approvalStatus);
   const [saving, setSaving] = useState(false);
+  const [enriching, setEnriching] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const onUpdatedRef = useRef(onUpdated);
+  onUpdatedRef.current = onUpdated;
+
+  useEffect(() => {
+    if (TERMINAL_ENRICHMENT_STATUSES.has(lead.enrichmentStatus)) return undefined;
+
+    const interval = setInterval(async () => {
+      try {
+        const { lead: refreshed } = await fetchLead(lead._id);
+        onUpdatedRef.current(refreshed);
+      } catch {
+        // Transient polling failures are not user-facing; the next tick retries.
+      }
+    }, 3000);
+
+    return () => clearInterval(interval);
+  }, [lead._id, lead.enrichmentStatus]);
+
+  const handleEnrich = async () => {
+    setEnriching(true);
+    setError(null);
+    try {
+      const { lead: updated } = await enrichLeadApi(lead._id);
+      onUpdated(updated);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to queue enrichment');
+    } finally {
+      setEnriching(false);
+    }
+  };
 
   const handleSave = async () => {
     setSaving(true);
@@ -83,6 +197,10 @@ export default function LeadDetailsModal({ lead, onClose, onUpdated, onDeleted }
           <dt className="text-neutral-500">Email Confidence</dt>
           <dd>{lead.emailConfidence}</dd>
         </dl>
+
+        <div className="mb-4">
+          <EmailsSection lead={lead} onEnrich={handleEnrich} enriching={enriching} />
+        </div>
 
         <div className="flex flex-col gap-3">
           <label htmlFor="lead-email" className="flex flex-col gap-1 text-sm">

@@ -1,6 +1,10 @@
 'use client';
 
 import type { ApprovalStatus, SentStatus, ValidationStatus } from '@/lib/types/lead';
+import { Field } from '@/components/ui/Field';
+import { Input, Select } from '@/components/ui/Input';
+import Button from '@/components/ui/Button';
+import { SearchIcon } from '@/components/ui/Icons';
 
 export interface FiltersState {
   search: string;
@@ -31,107 +35,89 @@ export default function FiltersPanel({ filters, onChange }: FiltersPanelProps) {
   };
 
   return (
-    <div className="flex flex-wrap items-end gap-3 rounded-lg border border-neutral-200 p-4 dark:border-neutral-800">
-      <div className="flex flex-col gap-1">
-        <label htmlFor="search" className="text-xs font-medium text-neutral-500">
-          Search
-        </label>
-        <input
-          id="search"
-          type="text"
-          placeholder="Name or email"
-          value={filters.search}
-          onChange={(e) => update('search', e.target.value)}
-          className="rounded-md border border-neutral-300 px-2 py-1.5 text-sm dark:border-neutral-700 dark:bg-neutral-900"
-        />
-      </div>
+    <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="flex flex-wrap items-end gap-3">
+        <Field label="Search" htmlFor="search" className="min-w-[200px] flex-1">
+          <div className="relative">
+            <SearchIcon
+              width={14}
+              height={14}
+              className="pointer-events-none absolute top-1/2 left-2.5 -translate-y-1/2 text-slate-400"
+            />
+            <Input
+              id="search"
+              type="text"
+              placeholder="Name or email"
+              value={filters.search}
+              onChange={(e) => update('search', e.target.value)}
+              className="pl-8"
+            />
+          </div>
+        </Field>
 
-      <div className="flex flex-col gap-1">
-        <label htmlFor="approvalStatus" className="text-xs font-medium text-neutral-500">
-          Approval Status
-        </label>
-        <select
-          id="approvalStatus"
-          value={filters.approvalStatus}
-          onChange={(e) => update('approvalStatus', e.target.value as FiltersState['approvalStatus'])}
-          className="rounded-md border border-neutral-300 px-2 py-1.5 text-sm dark:border-neutral-700 dark:bg-neutral-900"
-        >
-          <option value="">All</option>
-          <option value="PENDING">Pending</option>
-          <option value="APPROVED">Approved</option>
-          <option value="REJECTED">Rejected</option>
-        </select>
-      </div>
+        <Field label="Approval Status" htmlFor="approvalStatus" className="w-44">
+          <Select
+            id="approvalStatus"
+            value={filters.approvalStatus}
+            onChange={(e) => update('approvalStatus', e.target.value as FiltersState['approvalStatus'])}
+          >
+            <option value="">All</option>
+            <option value="PENDING">Pending</option>
+            <option value="APPROVED">Approved</option>
+            <option value="REJECTED">Rejected</option>
+          </Select>
+        </Field>
 
-      <div className="flex flex-col gap-1">
-        <label htmlFor="validationStatus" className="text-xs font-medium text-neutral-500">
-          Validation Status
-        </label>
-        <select
-          id="validationStatus"
-          value={filters.validationStatus}
-          onChange={(e) => update('validationStatus', e.target.value as FiltersState['validationStatus'])}
-          className="rounded-md border border-neutral-300 px-2 py-1.5 text-sm dark:border-neutral-700 dark:bg-neutral-900"
-        >
-          <option value="">All</option>
-          <option value="PASS">Pass</option>
-          <option value="FAIL">Fail</option>
-          <option value="NEEDS_REVIEW">Needs Review</option>
-          <option value="NOT_FOUND">Not Found</option>
-        </select>
-      </div>
+        <Field label="Validation Status" htmlFor="validationStatus" className="w-44">
+          <Select
+            id="validationStatus"
+            value={filters.validationStatus}
+            onChange={(e) => update('validationStatus', e.target.value as FiltersState['validationStatus'])}
+          >
+            <option value="">All</option>
+            <option value="PASS">Pass</option>
+            <option value="FAIL">Fail</option>
+            <option value="NEEDS_REVIEW">Needs Review</option>
+            <option value="NOT_FOUND">Not Found</option>
+          </Select>
+        </Field>
 
-      <div className="flex flex-col gap-1">
-        <label htmlFor="sentStatus" className="text-xs font-medium text-neutral-500">
-          Sent Status
-        </label>
-        <select
-          id="sentStatus"
-          value={filters.sentStatus}
-          onChange={(e) => update('sentStatus', e.target.value as FiltersState['sentStatus'])}
-          className="rounded-md border border-neutral-300 px-2 py-1.5 text-sm dark:border-neutral-700 dark:bg-neutral-900"
-        >
-          <option value="">All</option>
-          <option value="NOT_SENT">Not Sent</option>
-          <option value="DRAFT_CREATED">Draft Created</option>
-          <option value="SENT">Sent</option>
-          <option value="BOUNCED">Bounced</option>
-        </select>
-      </div>
+        <Field label="Sent Status" htmlFor="sentStatus" className="w-44">
+          <Select
+            id="sentStatus"
+            value={filters.sentStatus}
+            onChange={(e) => update('sentStatus', e.target.value as FiltersState['sentStatus'])}
+          >
+            <option value="">All</option>
+            <option value="NOT_SENT">Not Sent</option>
+            <option value="DRAFT_CREATED">Draft Created</option>
+            <option value="SENT">Sent</option>
+            <option value="BOUNCED">Bounced</option>
+          </Select>
+        </Field>
 
-      <div className="flex flex-col gap-1">
-        <label htmlFor="startDate" className="text-xs font-medium text-neutral-500">
-          From
-        </label>
-        <input
-          id="startDate"
-          type="date"
-          value={filters.startDate}
-          onChange={(e) => update('startDate', e.target.value)}
-          className="rounded-md border border-neutral-300 px-2 py-1.5 text-sm dark:border-neutral-700 dark:bg-neutral-900"
-        />
-      </div>
+        <Field label="From" htmlFor="startDate" className="w-36">
+          <Input
+            id="startDate"
+            type="date"
+            value={filters.startDate}
+            onChange={(e) => update('startDate', e.target.value)}
+          />
+        </Field>
 
-      <div className="flex flex-col gap-1">
-        <label htmlFor="endDate" className="text-xs font-medium text-neutral-500">
-          To
-        </label>
-        <input
-          id="endDate"
-          type="date"
-          value={filters.endDate}
-          onChange={(e) => update('endDate', e.target.value)}
-          className="rounded-md border border-neutral-300 px-2 py-1.5 text-sm dark:border-neutral-700 dark:bg-neutral-900"
-        />
-      </div>
+        <Field label="To" htmlFor="endDate" className="w-36">
+          <Input
+            id="endDate"
+            type="date"
+            value={filters.endDate}
+            onChange={(e) => update('endDate', e.target.value)}
+          />
+        </Field>
 
-      <button
-        type="button"
-        onClick={() => onChange(EMPTY_FILTERS)}
-        className="rounded-md border border-neutral-300 px-3 py-1.5 text-sm font-medium hover:bg-neutral-100 dark:border-neutral-700 dark:hover:bg-neutral-800"
-      >
-        Reset filters
-      </button>
+        <Button type="button" variant="outline" size="md" onClick={() => onChange(EMPTY_FILTERS)}>
+          Reset filters
+        </Button>
+      </div>
     </div>
   );
 }

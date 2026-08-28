@@ -1,6 +1,6 @@
 import dns from 'node:dns';
 import validator from 'validator';
-import type { EmailValidationResult } from '@/lib/types/lead';
+import type { EmailEntryValidationStatus, EmailValidationResult, ValidationStatus } from '@/lib/types/lead';
 
 const DISPOSABLE_DOMAINS = new Set([
   'mailinator.com',
@@ -117,4 +117,70 @@ export async function validateEmail(
 
   reasons.push('Syntax valid, domain resolves, MX records found, not disposable or role-based');
   return { status: 'PASS', validationChecks, reasons, confidence: 'HIGH' };
+}
+
+const STATUS_TO_ENTRY_STATUS: Record<ValidationStatus, EmailEntryValidationStatus> = {
+  PASS: 'valid',
+  FAIL: 'invalid',
+  NEEDS_REVIEW: 'risky',
+  NOT_FOUND: 'unknown',
+};
+
+export function mapValidationStatusToEntryStatus(
+  status: ValidationStatus
+): EmailEntryValidationStatus {
+  return STATUS_TO_ENTRY_STATUS[status];
+}
+
+export interface EmailEntryValidationResult {
+  email: string;
+  validationStatus: EmailEntryValidationStatus;
+  validationDetails: string;
+}
+
+/**
+ * Validates a single email for multi-email enrichment, reusing the same free
+ * DNS/MX-based checks as the primary pipeline but mapped onto the
+ * pending/valid/invalid/unknown/risky vocabulary used for stored EmailEntry
+ * records. This is the application's configured validation provider; swap
+ * the resolver (or this function) for a paid deliverability API if one is
+ * ever configured.
+ */
+export async function validateEmailForEntry(
+  email: string,
+  resolver: DnsResolver = defaultResolver
+): Promise<EmailEntryValidationResult> {
+  const result = await validateEmail(email, resolver);
+  return {
+    email,
+    validationStatus: STATUS_TO_ENTRY_STATUS[result.status],
+    validationDetails: JSON.stringify({ checks: result.validationChecks, reasons: result.reasons }),
+  };
+}
+
+const DEFAULT_VALIDATION_CONCURRENCY = 5;
+
+/**
+ * Validates many emails with bounded concurrency so a large crawl result
+ * doesn't fire dozens of simultaneous DNS lookups at once.
+ */
+export async function validateEmailEntries(
+  emails: string[],
+  resolver: DnsResolver = defaultResolver,
+  concurrency = DEFAULT_VALIDATION_CONCURRENCY
+): Promise<EmailEntryValidationResult[]> {
+  const results: EmailEntryValidationResult[] = new Array(emails.length);
+  let nextIndex = 0;
+
+  async function worker() {
+    while (nextIndex < emails.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await validateEmailForEntry(emails[index], resolver);
+    }
+  }
+
+  const workers = Array.from({ length: Math.min(concurrency, emails.length) }, () => worker());
+  await Promise.all(workers);
+  return results;
 }

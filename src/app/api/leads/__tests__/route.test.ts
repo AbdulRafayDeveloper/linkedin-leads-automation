@@ -6,10 +6,16 @@ import { GET, POST, DELETE } from '../route';
 import { getFilteredLeads } from '@/lib/db/operations/read';
 import { deleteLeadsByIds } from '@/lib/db/operations/delete';
 import { createLead } from '@/lib/db/operations/create';
+import { enrichLead } from '@/lib/enrichment/enrichLead';
 
 jest.mock('@/lib/db/operations/read');
 jest.mock('@/lib/db/operations/delete');
 jest.mock('@/lib/db/operations/create');
+jest.mock('@/lib/enrichment/enrichLead');
+jest.mock('next/server', () => ({
+  ...jest.requireActual('next/server'),
+  after: jest.fn((callback: () => unknown) => callback()),
+}));
 
 describe('GET /api/leads', () => {
   beforeEach(() => jest.clearAllMocks());
@@ -43,6 +49,7 @@ describe('POST /api/leads', () => {
     });
     const response = await POST(request);
     expect(response.status).toBe(201);
+    expect(enrichLead).toHaveBeenCalledWith('1');
   });
 
   it('rejects a request missing lead data', async () => {

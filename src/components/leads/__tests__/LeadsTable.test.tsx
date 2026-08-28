@@ -36,6 +36,12 @@ function makeLead(overrides: Partial<LeadRecord> = {}): LeadRecord {
     sentAt: null,
     processingTimeMs: 1000,
     sourceText: null,
+    emails: [],
+    websiteStatus: 'not_started',
+    crawlStatus: 'not_started',
+    emailDiscoveryStatus: 'not_started',
+    enrichmentStatus: 'COMPLETED',
+    enrichmentError: null,
     ...overrides,
   };
 }

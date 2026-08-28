@@ -1,4 +1,4 @@
-import { validateEmail, type DnsResolver } from '../validation';
+import { validateEmail, validateEmailEntries, validateEmailForEntry, type DnsResolver } from '../validation';
 
 const resolverWithMx: DnsResolver = {
   resolveMx: async () => [{ exchange: 'mx.example.com', priority: 10 }],
@@ -64,5 +64,50 @@ describe('validateEmail', () => {
   it('treats disposable domains case-insensitively', async () => {
     const result = await validateEmail('user@MAILINATOR.com', resolverWithMx);
     expect(result.validationChecks?.isDisposable).toBe(true);
+  });
+});
+
+describe('validateEmailForEntry', () => {
+  it('maps PASS to valid', async () => {
+    const result = await validateEmailForEntry('gus@northwindrobotics.com', resolverWithMx);
+    expect(result.validationStatus).toBe('valid');
+    expect(result.email).toBe('gus@northwindrobotics.com');
+  });
+
+  it('maps FAIL to invalid', async () => {
+    const result = await validateEmailForEntry('user@mailinator.com', resolverWithMx);
+    expect(result.validationStatus).toBe('invalid');
+  });
+
+  it('maps NEEDS_REVIEW to risky', async () => {
+    const result = await validateEmailForEntry('info@northwindrobotics.com', resolverWithMx);
+    expect(result.validationStatus).toBe('risky');
+  });
+
+  it('serializes validation details as JSON', async () => {
+    const result = await validateEmailForEntry('gus@northwindrobotics.com', resolverWithMx);
+    expect(() => JSON.parse(result.validationDetails)).not.toThrow();
+  });
+});
+
+describe('validateEmailEntries', () => {
+  it('validates every email in the batch', async () => {
+    const results = await validateEmailEntries(
+      ['gus@northwindrobotics.com', 'info@northwindrobotics.com', 'user@mailinator.com'],
+      resolverWithMx
+    );
+    expect(results).toHaveLength(3);
+    expect(results.map((r) => r.validationStatus)).toEqual(['valid', 'risky', 'invalid']);
+  });
+
+  it('preserves input order even with bounded concurrency', async () => {
+    const emails = Array.from({ length: 10 }, (_, i) => `user${i}@northwindrobotics.com`);
+    const results = await validateEmailEntries(emails, resolverWithMx, 3);
+    expect(results.map((r) => r.email)).toEqual(emails);
+  });
+
+  it('returns an empty array for no emails', async () => {
+    const results = await validateEmailEntries([], resolverWithMx);
+    expect(results).toEqual([]);
   });
 });

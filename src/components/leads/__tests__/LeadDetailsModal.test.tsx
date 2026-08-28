@@ -1,11 +1,13 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import LeadDetailsModal from '../LeadDetailsModal';
-import { deleteLeadApi, updateLeadApi } from '@/lib/api/client';
+import { deleteLeadApi, enrichLeadApi, fetchLead, updateLeadApi } from '@/lib/api/client';
 import type { LeadRecord } from '@/lib/types/lead';
 
 jest.mock('@/lib/api/client', () => ({
   updateLeadApi: jest.fn(),
   deleteLeadApi: jest.fn(),
+  enrichLeadApi: jest.fn(),
+  fetchLead: jest.fn(),
 }));
 
 const lead: LeadRecord = {
@@ -41,6 +43,23 @@ const lead: LeadRecord = {
   sentAt: null,
   processingTimeMs: 1000,
   sourceText: null,
+  emails: [
+    {
+      email: 'gus@northwindrobotics.com',
+      source: 'LEAD_PROFILE',
+      sourceUrl: null,
+      emailType: 'PERSONAL',
+      validationStatus: 'valid',
+      validationDetails: null,
+      discoveredAt: new Date().toISOString(),
+      validatedAt: new Date().toISOString(),
+    },
+  ],
+  websiteStatus: 'found',
+  crawlStatus: 'completed',
+  emailDiscoveryStatus: 'emails_found',
+  enrichmentStatus: 'COMPLETED',
+  enrichmentError: null,
 };
 
 describe('LeadDetailsModal', () => {
@@ -84,5 +103,78 @@ describe('LeadDetailsModal', () => {
     render(<LeadDetailsModal lead={lead} onClose={onClose} onUpdated={jest.fn()} onDeleted={jest.fn()} />);
     fireEvent.click(screen.getByLabelText('Close'));
     expect(onClose).toHaveBeenCalled();
+  });
+
+  it('lists discovered emails with their validation status and source', () => {
+    const leadWithEmails: LeadRecord = {
+      ...lead,
+      emails: [
+        ...lead.emails,
+        {
+          email: 'sales@northwindrobotics.com',
+          source: 'COMPANY_WEBSITE',
+          sourceUrl: 'https://northwindrobotics.com/contact',
+          emailType: 'SALES',
+          validationStatus: 'invalid',
+          validationDetails: null,
+          discoveredAt: new Date().toISOString(),
+          validatedAt: new Date().toISOString(),
+        },
+      ],
+    };
+    render(<LeadDetailsModal lead={leadWithEmails} onClose={jest.fn()} onUpdated={jest.fn()} onDeleted={jest.fn()} />);
+    expect(screen.getByText('sales@northwindrobotics.com')).toBeInTheDocument();
+    expect(screen.getByText(/Invalid/)).toBeInTheDocument();
+    expect(screen.getByText(/https:\/\/northwindrobotics\.com\/contact/)).toBeInTheDocument();
+  });
+
+  it('shows an in-progress enrichment status and disables re-run while active', () => {
+    const enrichingLead: LeadRecord = { ...lead, enrichmentStatus: 'CRAWLING' };
+    render(<LeadDetailsModal lead={enrichingLead} onClose={jest.fn()} onUpdated={jest.fn()} onDeleted={jest.fn()} />);
+    expect(screen.getByText(/Crawling company website/)).toBeInTheDocument();
+    expect(screen.getByText('Re-run enrichment')).toBeDisabled();
+  });
+
+  it('shows the enrichment error when enrichment failed', () => {
+    const failedLead: LeadRecord = {
+      ...lead,
+      enrichmentStatus: 'FAILED',
+      enrichmentError: 'Website unreachable',
+    };
+    render(<LeadDetailsModal lead={failedLead} onClose={jest.fn()} onUpdated={jest.fn()} onDeleted={jest.fn()} />);
+    expect(screen.getByText(/Website unreachable/)).toBeInTheDocument();
+  });
+
+  it('re-runs enrichment and reports the updated lead', async () => {
+    (enrichLeadApi as jest.Mock).mockResolvedValue({ lead: { ...lead, enrichmentStatus: 'QUEUED' } });
+    const onUpdated = jest.fn();
+    render(<LeadDetailsModal lead={lead} onClose={jest.fn()} onUpdated={onUpdated} onDeleted={jest.fn()} />);
+    fireEvent.click(screen.getByText('Re-run enrichment'));
+    await waitFor(() => expect(onUpdated).toHaveBeenCalledWith(expect.objectContaining({ enrichmentStatus: 'QUEUED' })));
+  });
+
+  it('polls for updates while enrichment is still in progress', async () => {
+    jest.useFakeTimers({ legacyFakeTimers: false });
+    (fetchLead as jest.Mock).mockResolvedValue({ lead: { ...lead, enrichmentStatus: 'CRAWLING' } });
+    const onUpdated = jest.fn();
+    const inProgressLead: LeadRecord = { ...lead, enrichmentStatus: 'CRAWLING' };
+
+    render(<LeadDetailsModal lead={inProgressLead} onClose={jest.fn()} onUpdated={onUpdated} onDeleted={jest.fn()} />);
+
+    await jest.advanceTimersByTimeAsync(3000);
+
+    expect(fetchLead).toHaveBeenCalledWith('1');
+    expect(onUpdated).toHaveBeenCalled();
+    jest.useRealTimers();
+  });
+
+  it('does not poll once enrichment has reached a terminal status', async () => {
+    jest.useFakeTimers({ legacyFakeTimers: false });
+    render(<LeadDetailsModal lead={lead} onClose={jest.fn()} onUpdated={jest.fn()} onDeleted={jest.fn()} />);
+
+    await jest.advanceTimersByTimeAsync(5000);
+
+    expect(fetchLead).not.toHaveBeenCalled();
+    jest.useRealTimers();
   });
 });
