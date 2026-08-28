@@ -99,3 +99,194 @@ describe('parseLeadContent', () => {
     expect(() => parseLeadContent('   ')).toThrow();
   });
 });
+
+// A real Sales Navigator lead page dump: nav chrome, a repeated tab strip
+// ("About / Relationship / Experience") before the real section headers, and
+// no URLs at all. This is the shape the parser sees in production.
+const HARLEY_SALES_NAV_SAMPLE = `Home
+Accounts
+Leads
+Smart Links
+Messaging
+Actions List
+Referrals
+
+7
+7 new notifications
+
+Abdul Rafay Full Stack AI DeveloperAbdul Rafay Full Stack AI Developer’s profile picture
+Search
+Search
+Search
+Lead filters
+Account filters
+
+Saved searches
+
+Personas
+
+
+Sales Navigator Lead Page
+Basic lead information for Harley T.
+
+’s profile picture
+Harley T.
+3rd
+Viewed: 8/28/2026
+CTO at Trust Provenance
+Adelaide, South Australia, Australia
+289 connections
+
+Save
+
+Message
+
+Current role
+Trust Provenance
+Chief Technology Officer at Trust Provenance
+
+May 2021–Present  5 yrs 4 mos
+
+No job description
+
+Also worked at Boeing See more
+
+Contact information
+
+Add contact info
+Search on Bing
+
+
+Lead IQNew
+About
+Relationship
+Experience
+Get insights about Harley
+BETA
+View personalized AI powered insights based on Harley’s profile and activity. Learn more
+
+
+Generate Lead IQ
+About
+I am CTO at Trust Provenance, building infrastructure that lets supply chain clai … Show more
+Relationship
+You and Harley don’t share anything in common on LinkedIn. Search for leads at Trust Provenance instead.
+
+Search leads
+Harley’s experience
+Harley has worked for 2 different companies over their professional career
+
+Trust Provenance
+Chief Technology Officer
+Trust Provenance
+
+May 2021–Present  5 yrs 4 mos
+
+Adelaide, South Australia, Australia
+
+Boeing
+Data Engineer
+Boeing
+
+Nov 2018–Apr 2021  2 yrs 6 mos
+
+Adelaide, South Australia, Australia
+
+In November 2018 I had the pleasure to begin employment at Boeing Defence Australia within their Data Analytics capability. Here I conducted a significant refactoring of Boeing Maintenance Workflow Analytics (BMWA), to improve maintainability and enable future growth of the product. This body of work resulted in more customer engagements within the business, and I was awarded a Boeing Wirraway Award along with my teamma … Show more
+Education
+University of Adelaide
+University of Adelaide
+Bachelor of Computer Science (Advanced, Major in Data Science) Computer Science
+
+2016 – 2020
+
+Interests
+Australian Trade and Investment Commission (Austrade)’s logo
+Australian Trade and Investment Commission (Austrade)
+205,529 followers
+
+Google’s logo
+Google
+42,340,724 followers
+
+See all interests
+Featured skills and endorsements
+Data Analysis
+
+1 endorsement
+Applied Machine Learning
+
+1 endorsement
+Docker
+
+1 endorsement
+
+Show all skills
+Lead actions panel
+Lists (0)
+
+Save
+Add to a list to help organize leads and get alerts
+
+Notes (0)
+
+Add
+Add notes to remember key details about Harley
+
+Timeline
+Your past history with Harley and key events
+
+You have no previous activity with Harley
+
+Save Harley to get alerts and stay informed of changes and updates
+
+0 notifications total
+
+Chat with us`;
+
+describe('parseLeadContent — real Sales Navigator dump', () => {
+  it('extracts the lead name from the "Basic lead information for X" anchor, ignoring nav chrome', () => {
+    const result = parseLeadContent(HARLEY_SALES_NAV_SAMPLE);
+    expect(result.fullName).toBe('Harley T.');
+  });
+
+  it('extracts title and company even with a duplicate "Current role" section later', () => {
+    const result = parseLeadContent(HARLEY_SALES_NAV_SAMPLE);
+    expect(result.currentTitle).toBe('CTO');
+    expect(result.currentCompany).toBe('Trust Provenance');
+  });
+
+  it('picks the real About paragraph over the tab-bar label of the same name', () => {
+    const result = parseLeadContent(HARLEY_SALES_NAV_SAMPLE);
+    expect(result.about).toContain('building infrastructure');
+    expect(result.about).not.toBe('Relationship');
+  });
+
+  it('finds experience under a "<Name>\'s experience" header instead of the bare Experience tab', () => {
+    const result = parseLeadContent(HARLEY_SALES_NAV_SAMPLE);
+    expect(result.experience.some((line) => line.includes('Boeing'))).toBe(true);
+    expect(result.experience.some((line) => line.includes('Trust Provenance'))).toBe(true);
+  });
+
+  it('stops the education section at the Interests header instead of consuming the rest of the page', () => {
+    const result = parseLeadContent(HARLEY_SALES_NAV_SAMPLE);
+    expect(result.education).toEqual([
+      'University of Adelaide',
+      'University of Adelaide',
+      'Bachelor of Computer Science (Advanced, Major in Data Science) Computer Science',
+      '2016 – 2020',
+    ]);
+  });
+
+  it('extracts skills from "Featured skills and endorsements" without endorsement-count noise', () => {
+    const result = parseLeadContent(HARLEY_SALES_NAV_SAMPLE);
+    expect(result.skills).toEqual(['Data Analysis', 'Applied Machine Learning', 'Docker']);
+  });
+
+  it('does not fabricate an email, LinkedIn URL, or website when none are present', () => {
+    const result = parseLeadContent(HARLEY_SALES_NAV_SAMPLE);
+    expect(result.publicEmail).toBeNull();
+    expect(result.linkedinProfileUrl).toBeNull();
+    expect(result.currentCompanyWebsite).toBeNull();
+  });
+});

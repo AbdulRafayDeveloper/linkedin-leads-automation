@@ -46,6 +46,15 @@ describe('researchCompany', () => {
     expect(result.discoveredEmails).toContain('sales@northwindrobotics.com');
   });
 
+  it('ignores tracking IDs embedded in script tags that look like emails', async () => {
+    const fetchPage = makeFetch({
+      'https://www.northwindrobotics.com':
+        '<html><head><script>Sentry.init({dsn:"https://605a7baede844d278b89dc95ae0a9123@sentry-next.wixpress.com/123"})</script></head><body>Northwind Robotics. Contact hello@northwindrobotics.com</body></html>',
+    });
+    const result = await researchCompany('Northwind Robotics', 'https://www.northwindrobotics.com', fetchPage);
+    expect(result.discoveredEmails).toEqual(['hello@northwindrobotics.com']);
+  });
+
   it('never fabricates an official website when nothing resolves', async () => {
     const result = await researchCompany('Totally Unknown Corp', null, async () => null);
     expect(result.officialWebsite).toBeNull();

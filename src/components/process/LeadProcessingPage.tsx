@@ -85,7 +85,10 @@ export default function LeadProcessingPage() {
       {error && <p className="mt-6 text-sm text-red-600">{error}</p>}
 
       {result && (
-        <div className="mt-8 rounded-lg border border-neutral-200 p-4 dark:border-neutral-800">
+        <div
+          data-testid="processing-result"
+          className="mt-8 rounded-lg border border-neutral-200 p-4 dark:border-neutral-800"
+        >
           <h2 className="mb-3 text-lg font-semibold">Processing Complete</h2>
           <dl className="grid grid-cols-2 gap-2 text-sm">
             <dt className="text-neutral-500">Name</dt>

@@ -85,9 +85,10 @@ export default function LeadDetailsModal({ lead, onClose, onUpdated, onDeleted }
         </dl>
 
         <div className="flex flex-col gap-3">
-          <label className="flex flex-col gap-1 text-sm">
+          <label htmlFor="lead-email" className="flex flex-col gap-1 text-sm">
             <span className="font-medium">Email</span>
             <input
+              id="lead-email"
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
@@ -95,9 +96,10 @@ export default function LeadDetailsModal({ lead, onClose, onUpdated, onDeleted }
             />
           </label>
 
-          <label className="flex flex-col gap-1 text-sm">
+          <label htmlFor="lead-approval-status" className="flex flex-col gap-1 text-sm">
             <span className="font-medium">Approval Status</span>
             <select
+              id="lead-approval-status"
               value={approvalStatus}
               onChange={(e) => setApprovalStatus(e.target.value as ApprovalStatus)}
               className="rounded-md border border-neutral-300 px-2 py-1.5 dark:border-neutral-700 dark:bg-neutral-800"
@@ -108,9 +110,10 @@ export default function LeadDetailsModal({ lead, onClose, onUpdated, onDeleted }
             </select>
           </label>
 
-          <label className="flex flex-col gap-1 text-sm">
+          <label htmlFor="lead-email-subject" className="flex flex-col gap-1 text-sm">
             <span className="font-medium">Email Subject</span>
             <input
+              id="lead-email-subject"
               type="text"
               value={subject}
               onChange={(e) => setSubject(e.target.value)}
@@ -119,9 +122,10 @@ export default function LeadDetailsModal({ lead, onClose, onUpdated, onDeleted }
             />
           </label>
 
-          <label className="flex flex-col gap-1 text-sm">
+          <label htmlFor="lead-email-body" className="flex flex-col gap-1 text-sm">
             <span className="font-medium">Email Body</span>
             <textarea
+              id="lead-email-body"
               value={body}
               onChange={(e) => setBody(e.target.value)}
               rows={6}

@@ -23,11 +23,24 @@ const defaultFetchPage: FetchPage = async (url: string): Promise<string | null> 
   }
 };
 
+// Analytics/error-tracking scripts (Sentry, GTM, Wix, etc.) embed IDs shaped
+// like "<hex>@<vendor-domain>" inside <script> tags. These match a plain
+// email regex but are never real contact addresses, so they must be excluded.
+const TRACKER_DOMAINS =
+  /(^|\.)(wixpress\.com|sentry\.io|google-analytics\.com|googletagmanager\.com|doubleclick\.net|hotjar\.com|segment\.io|cloudflareinsights\.com)$/i;
+
 function extractEmails(html: string): string[] {
-  const matches = html.match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g) || [];
-  return Array.from(new Set(matches)).filter(
-    (email) => !/\.(png|jpg|jpeg|gif|svg|webp)$/i.test(email)
-  );
+  const withoutScripts = html
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ');
+  const matches = withoutScripts.match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g) || [];
+  return Array.from(new Set(matches)).filter((email) => {
+    if (/\.(png|jpg|jpeg|gif|svg|webp)$/i.test(email)) return false;
+    const [localPart, domain] = email.split('@');
+    if (TRACKER_DOMAINS.test(domain)) return false;
+    if (/^[0-9a-f]{16,}$/i.test(localPart)) return false;
+    return true;
+  });
 }
 
 function stripHtml(html: string): string {

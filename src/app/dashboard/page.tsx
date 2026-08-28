@@ -118,7 +118,7 @@ export default function DashboardPage() {
           onClose={() => setSelectedLead(null)}
           onUpdated={(updated) => {
             setLeads((prev) => prev.map((l) => (l._id === updated._id ? updated : l)));
-            setSelectedLead(null);
+            setSelectedLead(updated);
           }}
           onDeleted={(id) => {
             setLeads((prev) => prev.filter((l) => l._id !== id));
