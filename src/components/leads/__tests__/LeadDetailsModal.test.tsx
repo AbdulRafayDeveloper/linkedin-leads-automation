@@ -19,6 +19,7 @@ const lead: LeadRecord = {
   currentCompany: 'Northwind Robotics',
   currentCompanyLinkedInUrl: null,
   currentCompanyWebsite: null,
+  currentCompanyLocation: null,
   location: 'San Francisco',
   currentRoleStartDate: null,
   about: null,

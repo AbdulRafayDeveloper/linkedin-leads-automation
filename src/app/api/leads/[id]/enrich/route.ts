@@ -1,6 +1,5 @@
 import { after, type NextRequest } from 'next/server';
 import { getLeadById } from '@/lib/db/operations/read';
-import { updateLead } from '@/lib/db/operations/update';
 import { enrichLead } from '@/lib/enrichment/enrichLead';
 import { jsonError, jsonOk } from '@/lib/api/response';
 
@@ -16,10 +15,13 @@ export async function POST(_request: NextRequest, { params }: RouteParams) {
     const lead = await getLeadById(id);
     if (!lead) return jsonError('Lead not found', 404);
 
-    const updated = await updateLead(id, { enrichmentStatus: 'QUEUED', enrichmentError: null });
+    // Do not force-reset enrichmentStatus here: enrichLead() atomically
+    // claims the lead itself (only proceeding from an idle/terminal status).
+    // Resetting it unconditionally would let this request race an
+    // already-running automatic enrichment and produce duplicate emails.
     after(() => enrichLead(id));
 
-    return jsonOk({ lead: updated });
+    return jsonOk({ lead });
   } catch (error) {
     return jsonError(
       error instanceof Error ? error.message : 'Failed to queue enrichment',

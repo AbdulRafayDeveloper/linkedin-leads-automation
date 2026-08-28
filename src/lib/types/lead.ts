@@ -64,6 +64,7 @@ export interface ParsedLead {
   currentCompany: string | null;
   currentCompanyLinkedInUrl: string | null;
   currentCompanyWebsite: string | null;
+  currentCompanyLocation: string | null;
   location: string | null;
   currentRoleStartDate: string | null;
   about: string | null;
@@ -134,6 +135,7 @@ export interface LeadRecord {
   currentCompany: string | null;
   currentCompanyLinkedInUrl: string | null;
   currentCompanyWebsite: string | null;
+  currentCompanyLocation: string | null;
   location: string | null;
   currentRoleStartDate: string | null;
   about: string | null;

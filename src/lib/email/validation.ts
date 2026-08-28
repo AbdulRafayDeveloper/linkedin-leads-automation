@@ -39,14 +39,62 @@ export interface DnsResolver {
   resolveMx: (domain: string) => Promise<Array<{ exchange: string; priority: number }>>;
 }
 
+// Error codes meaning "the DNS resolver itself could not be reached", as
+// opposed to codes meaning "this domain genuinely has no MX records"
+// (ENOTFOUND, ENODATA). Some sandboxed/restricted networks block outbound
+// DNS queries entirely, in which case even well-known domains like gmail.com
+// fail to resolve. Treating that the same as a real "no MX records" result
+// would wrongly mark valid emails as invalid, so these are reported as
+// unverifiable instead of failed.
+const DNS_UNAVAILABLE_ERROR_CODES = new Set([
+  'ECONNREFUSED',
+  'ETIMEOUT',
+  'ESERVFAIL',
+  'EREFUSED',
+  'ECANCELLED',
+]);
+
+// Some networks (sandboxed dev environments, restrictive corporate
+// networks) block outbound queries to the machine's configured DNS
+// resolver while still allowing queries to well-known public resolvers.
+// Falling back to these only kicks in when the system resolver is
+// unreachable; a domain that genuinely has no MX records still fails fast.
+const publicDnsResolver = new dns.Resolver();
+publicDnsResolver.setServers(['8.8.8.8', '1.1.1.1']);
+
+function resolveMxWith(
+  resolve: typeof dns.resolveMx,
+  domain: string,
+  timeoutMs: number
+): Promise<Array<{ exchange: string; priority: number }>> {
+  return new Promise((resolvePromise, reject) => {
+    const timer = setTimeout(() => {
+      reject(Object.assign(new Error('DNS resolution timeout'), { code: 'ETIMEOUT' }));
+    }, timeoutMs);
+    resolve(domain, (err, addresses) => {
+      clearTimeout(timer);
+      if (err) reject(err);
+      else resolvePromise(addresses);
+    });
+  });
+}
+
 const defaultResolver: DnsResolver = {
-  resolveMx: (domain: string) =>
-    new Promise((resolve, reject) => {
-      dns.resolveMx(domain, (err, addresses) => {
-        if (err) reject(err);
-        else resolve(addresses);
-      });
-    }),
+  resolveMx: async (domain: string) => {
+    try {
+      return await resolveMxWith(dns.resolveMx, domain, 5000);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException)?.code;
+      if (code && DNS_UNAVAILABLE_ERROR_CODES.has(code)) {
+        return await resolveMxWith(
+          publicDnsResolver.resolveMx.bind(publicDnsResolver),
+          domain,
+          5000
+        );
+      }
+      throw error;
+    }
+  },
 };
 
 export async function validateEmail(
@@ -85,19 +133,28 @@ export async function validateEmail(
 
   let mxRecordsFound = false;
   let domainResolves = false;
+  let dnsUnavailable = false;
   try {
     const records = await resolver.resolveMx(domain);
     mxRecordsFound = records.length > 0;
     domainResolves = true;
-  } catch {
+  } catch (error) {
     domainResolves = false;
     mxRecordsFound = false;
-    reasons.push(`Could not resolve MX records for domain "${domain}"`);
+    const code = (error as NodeJS.ErrnoException)?.code;
+    if (code && DNS_UNAVAILABLE_ERROR_CODES.has(code)) {
+      dnsUnavailable = true;
+      reasons.push(
+        `DNS lookup for "${domain}" could not be completed (${code}); mail server presence could not be verified`
+      );
+    } else {
+      reasons.push(`Could not resolve MX records for domain "${domain}"`);
+    }
   }
 
   if (isDisposable) reasons.push('Domain is a known disposable email provider');
   if (isRoleEmail) reasons.push('Address appears to be a role-based inbox rather than a person');
-  if (!mxRecordsFound) reasons.push('Domain has no valid mail exchange (MX) records');
+  if (!mxRecordsFound && !dnsUnavailable) reasons.push('Domain has no valid mail exchange (MX) records');
 
   const validationChecks = {
     syntax,
@@ -107,7 +164,15 @@ export async function validateEmail(
     isRoleEmail,
   };
 
-  if (!mxRecordsFound || isDisposable) {
+  if (isDisposable) {
+    return { status: 'FAIL', validationChecks, reasons, confidence: 'LOW' };
+  }
+
+  if (dnsUnavailable) {
+    return { status: 'NEEDS_REVIEW', validationChecks, reasons, confidence: 'LOW' };
+  }
+
+  if (!mxRecordsFound) {
     return { status: 'FAIL', validationChecks, reasons, confidence: 'LOW' };
   }
 

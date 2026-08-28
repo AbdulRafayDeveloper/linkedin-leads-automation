@@ -49,7 +49,7 @@ describe('crawlWebsite', () => {
       fetchRobotsTxt: noRobots,
       requestDelayMs: 0,
       maxDepth: 1,
-      maxPages: 20,
+      maxPages: 250,
     });
     const emails = result.emails.map((e) => e.email);
     expect(emails).toContain('updates@acme.com');
@@ -80,6 +80,7 @@ describe('crawlWebsite', () => {
       fetchPage,
       fetchRobotsTxt: async () => 'User-agent: *\nDisallow: /careers\n',
       requestDelayMs: 0,
+      maxPages: 100,
     });
     const emails = result.emails.map((e) => e.email);
     expect(emails).toContain('hello@acme.com');
@@ -157,6 +158,58 @@ describe('crawlWebsite', () => {
     });
     const contactHits = result.crawledUrls.filter((u) => u.includes('/contact'));
     expect(contactHits.length).toBe(1);
+  });
+
+  it('falls back to a rendered homepage when the plain fetch finds no emails (JS-rendered sites)', async () => {
+    const fetchPage = makeFetchPage({
+      'https://acme.com/': { html: '<html><body><div id="root"></div></body></html>' },
+    });
+    const renderPage = jest.fn(async (url: string) =>
+      url === 'https://acme.com'
+        ? '<html><body><a href="mailto:go@acme.com">Get in touch</a></body></html>'
+        : null
+    );
+    const result = await crawlWebsite('https://acme.com', {
+      fetchPage,
+      fetchRobotsTxt: noRobots,
+      renderPage,
+      requestDelayMs: 0,
+      maxPages: 1,
+    });
+    expect(renderPage).toHaveBeenCalledWith('https://acme.com');
+    expect(result.emails.map((e) => e.email)).toContain('go@acme.com');
+  });
+
+  it('does not bother rendering the homepage when emails were already found normally', async () => {
+    const fetchPage = makeFetchPage({
+      'https://acme.com/': { html: '<html><body>hello@acme.com</body></html>' },
+    });
+    const renderPage = jest.fn(async () => '<html><body>should-not-be-used@acme.com</body></html>');
+    const result = await crawlWebsite('https://acme.com', {
+      fetchPage,
+      fetchRobotsTxt: noRobots,
+      renderPage,
+      requestDelayMs: 0,
+      maxPages: 1,
+    });
+    expect(renderPage).not.toHaveBeenCalled();
+    expect(result.emails.map((e) => e.email)).toEqual(['hello@acme.com']);
+  });
+
+  it('does not render the homepage when robots.txt disallows it', async () => {
+    const fetchPage = makeFetchPage({
+      'https://acme.com/': { html: '<html><body>no emails here</body></html>' },
+    });
+    const renderPage = jest.fn(async () => '<html><body>go@acme.com</body></html>');
+    const result = await crawlWebsite('https://acme.com', {
+      fetchPage,
+      fetchRobotsTxt: async () => 'User-agent: *\nDisallow: /\n',
+      renderPage,
+      requestDelayMs: 0,
+      maxPages: 1,
+    });
+    expect(renderPage).not.toHaveBeenCalled();
+    expect(result.emails).toEqual([]);
   });
 
   it('filters out tracker/analytics IDs disguised as emails', async () => {

@@ -36,6 +36,7 @@ export async function createLead(processingResult: ProcessingResult): Promise<Le
     currentCompany: lead.currentCompany,
     currentCompanyLinkedInUrl: lead.currentCompanyLinkedInUrl,
     currentCompanyWebsite: lead.currentCompanyWebsite,
+    currentCompanyLocation: lead.currentCompanyLocation,
     location: lead.location,
     currentRoleStartDate: lead.currentRoleStartDate,
     about: lead.about,

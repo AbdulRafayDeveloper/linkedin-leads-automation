@@ -35,6 +35,7 @@ export interface LeadDocument extends Document {
   currentCompany: string | null;
   currentCompanyLinkedInUrl: string | null;
   currentCompanyWebsite: string | null;
+  currentCompanyLocation: string | null;
   location: string | null;
   currentRoleStartDate: string | null;
   about: string | null;
@@ -111,6 +112,7 @@ const LeadSchema = new Schema<LeadDocument>(
     currentCompany: { type: String, required: true, trim: true },
     currentCompanyLinkedInUrl: { type: String, default: null },
     currentCompanyWebsite: { type: String, default: null },
+    currentCompanyLocation: { type: String, default: null },
     location: { type: String, default: null },
     currentRoleStartDate: { type: String, default: null },
 

@@ -1,15 +1,15 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
-import { processLeadApi } from '@/lib/api/client';
-import type { LeadRecord, ProcessingResult } from '@/lib/types/lead';
+import { enrichLeadApi, fetchLead, findCompanyWebsiteApi, processLeadApi } from '@/lib/api/client';
+import type { EmailEntry, LeadRecord, ProcessingResult } from '@/lib/types/lead';
 import { PageHeader } from '@/components/ui/PageHeader';
 import { Card, CardContent, CardHeader } from '@/components/ui/Card';
 import { Textarea } from '@/components/ui/Input';
 import Button, { buttonClasses } from '@/components/ui/Button';
 import { StatusBadge } from '@/components/ui/Badge';
-import { AlertTriangleIcon, ArrowRightIcon, CheckCircleIcon, LoaderIcon } from '@/components/ui/Icons';
+import { AlertTriangleIcon, ArrowRightIcon, CheckCircleIcon, CopyIcon, LoaderIcon } from '@/components/ui/Icons';
 import { cn } from '@/lib/utils/cn';
 
 const STEPS = [
@@ -21,6 +21,234 @@ const STEPS = [
   'Saving to database',
   'Awaiting approval',
 ];
+
+const TERMINAL_ENRICHMENT_STATUSES = new Set(['COMPLETED', 'FAILED']);
+
+const ENRICHMENT_STATUS_LABEL: Record<string, string> = {
+  QUEUED: 'Queued',
+  IDENTIFYING_COMPANY: 'Identifying current company',
+  FINDING_WEBSITE: 'Finding official website',
+  CRAWLING: 'Crawling company website',
+  EXTRACTING: 'Extracting emails',
+  VALIDATING: 'Validating emails',
+  COMPLETED: 'Completed',
+  FAILED: 'Failed',
+};
+
+const EMAIL_SOURCE_LABEL: Record<EmailEntry['source'], string> = {
+  LEAD_PROFILE: 'Lead profile',
+  COMPANY_WEBSITE: 'Company website',
+};
+
+function InfoRow({ label, value }: { label: string; value: string | null | undefined }) {
+  if (!value) return null;
+  return (
+    <>
+      <dt className="text-slate-500">{label}</dt>
+      <dd className="text-slate-800">{value}</dd>
+    </>
+  );
+}
+
+function InfoLinkRow({ label, href }: { label: string; href: string | null | undefined }) {
+  if (!href) return null;
+  const normalizedHref = /^https?:\/\//i.test(href) ? href : `https://${href}`;
+  return (
+    <>
+      <dt className="text-slate-500">{label}</dt>
+      <dd className="text-slate-800">
+        <a
+          href={normalizedHref}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-indigo-600 underline decoration-indigo-200 underline-offset-2 hover:text-indigo-700"
+        >
+          {href}
+        </a>
+      </dd>
+    </>
+  );
+}
+
+function CompanyWebsiteRow({
+  leadId,
+  initialWebsite,
+}: {
+  leadId: string;
+  initialWebsite: string | null;
+}) {
+  const [website, setWebsite] = useState<string | null>(initialWebsite);
+  const [searching, setSearching] = useState(false);
+  const [notFound, setNotFound] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  if (website) {
+    return <InfoLinkRow label="Company Website" href={website} />;
+  }
+
+  const handleSearch = async () => {
+    setSearching(true);
+    setError(null);
+    setNotFound(false);
+    try {
+      const { website: found } = await findCompanyWebsiteApi(leadId);
+      if (found) {
+        setWebsite(found);
+      } else {
+        setNotFound(true);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to search for company website');
+    } finally {
+      setSearching(false);
+    }
+  };
+
+  return (
+    <>
+      <dt className="text-slate-500">Company Website</dt>
+      <dd className="text-slate-800">
+        <div className="flex items-center gap-2">
+          <span className="text-slate-500">Not found</span>
+          <Button type="button" variant="outline" size="sm" onClick={handleSearch} disabled={searching}>
+            {searching && <LoaderIcon width={12} height={12} />}
+            {searching ? 'Searching…' : 'Search'}
+          </Button>
+        </div>
+        {notFound && (
+          <p className="mt-1 text-xs text-slate-500">No official website could be found on the web.</p>
+        )}
+        {error && <p className="mt-1 text-xs text-red-600">{error}</p>}
+      </dd>
+    </>
+  );
+}
+
+function CopyEmailButton({ email }: { email: string }) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(email);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Clipboard access can fail in unsupported contexts; no user-facing error needed for a copy button.
+    }
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={handleCopy}
+      className="flex shrink-0 items-center gap-1 rounded-md border border-slate-200 px-2 py-1 text-xs text-slate-600 hover:bg-slate-50"
+    >
+      <CopyIcon width={12} height={12} />
+      {copied ? 'Copied' : 'Copy'}
+    </button>
+  );
+}
+
+function FindEmailsSection({ leadId, initialLead }: { leadId: string; initialLead: LeadRecord }) {
+  const [lead, setLead] = useState<LeadRecord>(initialLead);
+  const [starting, setStarting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [started, setStarted] = useState(false);
+  const leadIdRef = useRef(leadId);
+  useEffect(() => {
+    leadIdRef.current = leadId;
+  });
+
+  useEffect(() => {
+    if (!started) return undefined;
+    if (TERMINAL_ENRICHMENT_STATUSES.has(lead.enrichmentStatus)) return undefined;
+
+    const interval = setInterval(async () => {
+      try {
+        const { lead: refreshed } = await fetchLead(leadIdRef.current);
+        setLead(refreshed);
+      } catch {
+        // Transient polling failures are not user-facing; the next tick retries.
+      }
+    }, 2000);
+
+    return () => clearInterval(interval);
+  }, [started, lead.enrichmentStatus]);
+
+  const handleFindEmails = async () => {
+    setStarting(true);
+    setError(null);
+    try {
+      const { lead: queued } = await enrichLeadApi(leadId);
+      setLead(queued);
+      setStarted(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to start email search');
+    } finally {
+      setStarting(false);
+    }
+  };
+
+  const inProgress = started && !TERMINAL_ENRICHMENT_STATUSES.has(lead.enrichmentStatus);
+
+  return (
+    <div className="mt-4 rounded-md border border-slate-200 p-3.5 text-sm">
+      <div className="mb-2.5 flex items-center justify-between">
+        <p className="text-xs font-semibold tracking-wide text-slate-500 uppercase">Company Emails</p>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={handleFindEmails}
+          disabled={starting || inProgress}
+        >
+          {(starting || inProgress) && <LoaderIcon width={13} height={13} />}
+          {inProgress ? 'Searching…' : starting ? 'Starting…' : 'Find Emails'}
+        </Button>
+      </div>
+
+      {error && <p className="mb-2 text-xs text-red-600">{error}</p>}
+
+      {started && (
+        <p className="mb-2 flex items-center gap-1.5 text-xs text-slate-500">
+          {inProgress && <LoaderIcon width={12} height={12} />}
+          {ENRICHMENT_STATUS_LABEL[lead.enrichmentStatus] || lead.enrichmentStatus}
+          {inProgress ? '…' : ''}
+        </p>
+      )}
+
+      {started && lead.enrichmentStatus === 'COMPLETED' && lead.emails.length === 0 && (
+        <p className="text-slate-500">No public emails were found on the company website.</p>
+      )}
+
+      {lead.emails.length > 0 && (
+        <ul className="flex flex-col divide-y divide-slate-100">
+          {lead.emails.map((entry) => (
+            <li
+              key={entry.email + entry.discoveredAt}
+              className="flex items-start justify-between gap-3 py-2 first:pt-0 last:pb-0"
+            >
+              <div className="min-w-0">
+                <p className="truncate font-medium text-slate-900">{entry.email}</p>
+                <p className="mt-0.5 text-xs text-slate-500">
+                  {EMAIL_SOURCE_LABEL[entry.source]}
+                  {entry.emailType !== 'UNKNOWN' ? ` · ${entry.emailType}` : ''}
+                </p>
+                {entry.sourceUrl && (
+                  <p className="mt-0.5 truncate text-xs text-slate-400">Source: {entry.sourceUrl}</p>
+                )}
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                <CopyEmailButton email={entry.email} />
+                <StatusBadge value={entry.validationStatus} />
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
 
 export default function LeadProcessingPage() {
   const [content, setContent] = useState('');
@@ -119,20 +347,31 @@ export default function LeadProcessingPage() {
             action={<StatusBadge value={result.result.validation.status} />}
           />
           <CardContent>
-            <dl className="grid grid-cols-2 gap-y-2 text-sm">
-              <dt className="text-slate-500">Name</dt>
-              <dd className="text-slate-800">{result.result.lead.fullName}</dd>
-              <dt className="text-slate-500">Company</dt>
-              <dd className="text-slate-800">{result.result.lead.currentCompany}</dd>
-              <dt className="text-slate-500">Email</dt>
-              <dd className="text-slate-800">{result.result.emailDiscovery.email || 'Not found'}</dd>
-              <dt className="text-slate-500">Processing Time</dt>
-              <dd className="text-slate-800">{(result.result.totalProcessingTimeMs / 1000).toFixed(1)}s</dd>
+            <FindEmailsSection key={result.lead._id} leadId={result.lead._id} initialLead={result.lead} />
+
+            <dl className="grid grid-cols-2 gap-y-2 text-sm mt-4">
+              <InfoRow label="Name" value={result.result.lead.fullName} />
+              <InfoRow label="Title" value={result.result.lead.currentTitle} />
+              <InfoRow label="Company" value={result.result.lead.currentCompany} />
+              <InfoRow label="Location" value={result.result.lead.location} />
+              <InfoRow label="Company Location" value={result.result.lead.currentCompanyLocation} />
+              <CompanyWebsiteRow
+                key={result.lead._id}
+                leadId={result.lead._id}
+                initialWebsite={result.result.company.officialWebsite || result.result.lead.currentCompanyWebsite}
+              />
+              <InfoRow label="Lead Email" value={result.result.emailDiscovery.email || 'Not found'} />
+              <InfoRow
+                label="Processing Time"
+                value={`${(result.result.totalProcessingTimeMs / 1000).toFixed(1)}s`}
+              />
             </dl>
+
             <div className="mt-4 rounded-md border border-slate-200 bg-slate-50 p-3 text-sm">
               <p className="font-semibold text-slate-900">{result.result.generatedEmail.subject}</p>
               <p className="mt-1 whitespace-pre-wrap text-slate-600">{result.result.generatedEmail.body}</p>
             </div>
+
             <Link
               href="/dashboard"
               className={cn(buttonClasses('outline', 'sm'), 'mt-4')}

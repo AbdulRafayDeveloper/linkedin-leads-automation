@@ -24,10 +24,10 @@ Personas
 
 
 Sales Navigator Lead Page
-Basic lead information for Priya Nandakumar.
+Basic lead information for Priya Nandakumar
 
 's profile picture
-Priya Nandakumar.
+Priya Nandakumar
 2nd
 Viewed: 8/28/2026
 VP Engineering at Solstice Robotics
@@ -103,8 +103,11 @@ You have no previous activity with Priya
 
 Chat with us`;
 
-async function clearAllLeads(request: APIRequestContext, baseURL: string) {
-  const response = await request.get(`${baseURL}/api/leads?limit=200`);
+// Deletes only leads matching this suite's own test name, never other leads
+// that might already exist in a shared dev database (e.g. from someone
+// manually testing the app alongside this suite).
+async function deleteTestLeads(request: APIRequestContext, baseURL: string) {
+  const response = await request.get(`${baseURL}/api/leads/search?q=${encodeURIComponent('Priya Nandakumar')}`);
   const body = await response.json();
   const ids = (body.leads || []).map((lead: { _id: string }) => lead._id);
   if (ids.length > 0) {
@@ -114,7 +117,12 @@ async function clearAllLeads(request: APIRequestContext, baseURL: string) {
 
 test.describe.serial('LinkedIn lead workflow', () => {
   test.beforeAll(async ({ request, baseURL }) => {
-    await clearAllLeads(request, baseURL!);
+    // In case a previous failed run left one behind.
+    await deleteTestLeads(request, baseURL!);
+  });
+
+  test.afterAll(async ({ request, baseURL }) => {
+    await deleteTestLeads(request, baseURL!);
   });
 
   test('home page loads with stats and navigation buttons', async ({ page }) => {
@@ -177,35 +185,35 @@ test.describe.serial('LinkedIn lead workflow', () => {
     const resultPanel = page.getByTestId('processing-result');
     await expect(resultPanel).toBeVisible({ timeout: 30_000 });
 
-    await expect(resultPanel.getByText('Priya Nandakumar.').first()).toBeVisible();
+    await expect(resultPanel.getByText('Priya Nandakumar').first()).toBeVisible();
     await expect(resultPanel.getByText('Solstice Robotics').first()).toBeVisible();
 
     const viewInDashboard = resultPanel.getByRole('link', { name: /View in dashboard/ });
     await expect(viewInDashboard).toBeVisible();
     await viewInDashboard.click();
     await expect(page).toHaveURL(/\/dashboard$/);
-    await expect(page.getByText('Priya Nandakumar.')).toBeVisible();
+    await expect(page.getByText('Priya Nandakumar')).toBeVisible();
 
     expect(errors, `Console errors during processing: ${errors.join('; ')}`).toEqual([]);
   });
 
   test('dashboard search filter narrows the leads table', async ({ page }) => {
     await page.goto('/dashboard');
-    await expect(page.getByText('Priya Nandakumar.')).toBeVisible();
+    await expect(page.getByText('Priya Nandakumar')).toBeVisible();
 
     await page.getByLabel('Search').fill('Priya');
-    await expect(page.getByText('Priya Nandakumar.')).toBeVisible();
+    await expect(page.getByText('Priya Nandakumar')).toBeVisible();
 
     await page.getByLabel('Search').fill('SomeoneWhoDoesNotExist');
     await expect(page.getByText(/No leads found/)).toBeVisible();
 
     await page.getByRole('button', { name: 'Reset filters' }).click();
-    await expect(page.getByText('Priya Nandakumar.')).toBeVisible();
+    await expect(page.getByText('Priya Nandakumar')).toBeVisible();
   });
 
   test('editing approval status in the lead details modal saves successfully', async ({ page }) => {
     await page.goto('/dashboard');
-    await page.getByText('Priya Nandakumar.').click();
+    await page.getByText('Priya Nandakumar').click();
 
     const dialog = page.getByRole('dialog');
     await expect(dialog).toBeVisible();
@@ -216,14 +224,14 @@ test.describe.serial('LinkedIn lead workflow', () => {
     await dialog.getByRole('button', { name: 'Close' }).click();
     await expect(dialog).not.toBeVisible();
 
-    await page.getByText('Priya Nandakumar.').click();
+    await page.getByText('Priya Nandakumar').click();
     await expect(dialog.getByLabel('Approval Status')).toHaveValue('APPROVED');
     await dialog.getByRole('button', { name: 'Close' }).click();
   });
 
   test('delete flow requires confirmation before removing a lead', async ({ page }) => {
     await page.goto('/dashboard');
-    await page.getByText('Priya Nandakumar.').click();
+    await page.getByText('Priya Nandakumar').click();
 
     await page.getByRole('button', { name: 'Delete lead' }).click();
     await expect(page.getByText('Delete this lead permanently?')).toBeVisible();
@@ -235,6 +243,6 @@ test.describe.serial('LinkedIn lead workflow', () => {
     await page.getByRole('button', { name: 'Confirm delete' }).click();
 
     await expect(page.getByRole('dialog')).not.toBeVisible();
-    await expect(page.getByText('Priya Nandakumar.')).not.toBeVisible();
+    await expect(page.getByText('Priya Nandakumar')).not.toBeVisible();
   });
 });

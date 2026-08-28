@@ -2,6 +2,7 @@
  * @jest-environment node
  */
 jest.mock('@/lib/parser/parser');
+jest.mock('@/lib/ai/extractLeadWithAi');
 jest.mock('@/lib/research/research');
 jest.mock('@/lib/email/discovery');
 jest.mock('@/lib/email/validation');
@@ -9,6 +10,7 @@ jest.mock('@/lib/email/generation');
 jest.mock('@/lib/ai/provider');
 
 import { parseLeadContent } from '@/lib/parser/parser';
+import { extractLeadWithAi } from '@/lib/ai/extractLeadWithAi';
 import { researchCompany } from '@/lib/research/research';
 import { discoverEmail } from '@/lib/email/discovery';
 import { validateEmail } from '@/lib/email/validation';
@@ -48,6 +50,7 @@ const fakeCompany = {
 describe('processLeadContent', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    (extractLeadWithAi as jest.Mock).mockResolvedValue(fakeLead);
     (parseLeadContent as jest.Mock).mockReturnValue(fakeLead);
     (researchCompany as jest.Mock).mockResolvedValue(fakeCompany);
     (discoverEmail as jest.Mock).mockReturnValue({
@@ -72,15 +75,32 @@ describe('processLeadContent', () => {
     });
   });
 
-  it('runs the full pipeline and returns a composed ProcessingResult', async () => {
+  it('extracts the lead via AI rather than the regex parser', async () => {
     (getChatModel as jest.Mock).mockResolvedValue({ invoke: jest.fn() });
     const result = await processLeadContent('raw content');
 
-    expect(parseLeadContent).toHaveBeenCalledWith('raw content');
-    expect(researchCompany).toHaveBeenCalledWith('Northwind Robotics', null);
+    expect(extractLeadWithAi).toHaveBeenCalledWith('raw content');
+    expect(parseLeadContent).not.toHaveBeenCalled();
+    expect(researchCompany).toHaveBeenCalledWith('Northwind Robotics', null, undefined, {
+      location: undefined,
+      title: 'Head of Growth',
+      headline: null,
+      about: null,
+    });
     expect(result.lead).toEqual(fakeLead);
     expect(result.generatedEmail.subject).toBe('Hi Gus');
     expect(typeof result.totalProcessingTimeMs).toBe('number');
+  });
+
+  it('falls back to the regex parser only when AI extraction fails on every provider', async () => {
+    (getChatModel as jest.Mock).mockResolvedValue({ invoke: jest.fn() });
+    (extractLeadWithAi as jest.Mock).mockRejectedValue(new Error('all providers failed'));
+
+    const result = await processLeadContent('raw content');
+
+    expect(extractLeadWithAi).toHaveBeenCalledWith('raw content');
+    expect(parseLeadContent).toHaveBeenCalledWith('raw content');
+    expect(result.lead).toEqual(fakeLead);
   });
 
   it('falls back to template generation when the AI provider is unavailable', async () => {

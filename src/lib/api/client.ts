@@ -78,3 +78,10 @@ export async function enrichLeadApi(id: string): Promise<{ lead: LeadRecord }> {
   const response = await fetch(`${API_BASE}/leads/${id}/enrich`, { method: 'POST' });
   return handle(response);
 }
+
+export async function findCompanyWebsiteApi(
+  id: string
+): Promise<{ lead: LeadRecord; website: string | null }> {
+  const response = await fetch(`${API_BASE}/leads/${id}/find-website`, { method: 'POST' });
+  return handle(response);
+}

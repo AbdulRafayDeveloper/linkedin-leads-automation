@@ -7,8 +7,48 @@ import { validateEmailEntries } from '@/lib/email/validation';
 import type {
   EmailEntryValidationStatus,
   EmailType,
+  EnrichmentStatus,
   ValidationStatus,
 } from '@/lib/types/lead';
+
+async function searchWebForEmails(companyName: string, fullName: string, websiteUrl: string | null): Promise<string[]> {
+  try {
+    let domain = '';
+    if (websiteUrl) {
+      try {
+        domain = new URL(websiteUrl).hostname.replace(/^www\./i, '');
+      } catch {}
+    }
+    const queryTerm = domain ? `"${domain}" email OR "${companyName}" contact email` : `"${companyName}" contact email OR "${fullName}" "${companyName}" email`;
+    const query = encodeURIComponent(queryTerm);
+    const response = await fetch(`https://html.duckduckgo.com/html/?q=${query}`, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      }
+    });
+    if (!response.ok) return [];
+    const html = await response.text();
+    const regex = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
+    const matches = html.match(regex) || [];
+    const TRACKER_DOMAINS = /(^|\.)(wixpress\.com|sentry\.io|google-analytics\.com|googletagmanager\.com|doubleclick\.net|hotjar\.com|segment\.io|cloudflareinsights\.com|duckduckgo\.com|bing\.com|microsoft\.com)$/i;
+    
+    const results = Array.from(new Set(matches.map(e => e.toLowerCase()))).filter((email) => {
+      if (/\.(png|jpg|jpeg|gif|svg|webp)$/i.test(email)) return false;
+      const [localPart, emailDomain] = email.split('@');
+      if (TRACKER_DOMAINS.test(emailDomain)) return false;
+      if (/^[0-9a-f]{16,}$/i.test(localPart)) return false;
+      return true;
+    });
+
+    if (domain) {
+      const domainEmails = results.filter(e => e.endsWith(domain));
+      if (domainEmails.length > 0) return domainEmails;
+    }
+    return results;
+  } catch {
+    return [];
+  }
+}
 
 export interface EnrichLeadOptions {
   crawlOptions?: CrawlOptions;
@@ -67,15 +107,30 @@ async function markCompletedWithoutWebsite(lead: LeadDocument): Promise<void> {
  * document (websiteStatus/crawlStatus/emailDiscoveryStatus/enrichmentStatus)
  * so the lead itself is never lost.
  */
+// Statuses that mean a run is currently in flight for this lead. Automatic
+// enrichment (triggered on lead creation) and a manual "Find Emails" /
+// re-enrich request can otherwise race and both append the same crawled
+// email, producing duplicates. Claiming the lead atomically (a MongoDB
+// findOneAndUpdate only matches and flips the status for one caller) makes
+// concurrent runs for the same lead impossible.
+const ACTIVE_ENRICHMENT_STATUSES: EnrichmentStatus[] = [
+  'IDENTIFYING_COMPANY',
+  'FINDING_WEBSITE',
+  'CRAWLING',
+  'EXTRACTING',
+  'VALIDATING',
+];
+
 export async function enrichLead(leadId: string, options: EnrichLeadOptions = {}): Promise<void> {
   await connectToMongoDB();
-  const lead = await Lead.findById(leadId);
+  const lead = await Lead.findOneAndUpdate(
+    { _id: leadId, enrichmentStatus: { $nin: ACTIVE_ENRICHMENT_STATUSES } },
+    { $set: { enrichmentStatus: 'IDENTIFYING_COMPANY', enrichmentError: null } },
+    { returnDocument: 'after' }
+  );
   if (!lead) return;
 
   try {
-    lead.enrichmentStatus = 'IDENTIFYING_COMPANY';
-    await lead.save();
-
     const companyName = lead.currentCompany;
     if (!companyName || companyName === 'CURRENT_COMPANY_UNCERTAIN') {
       await markCompletedWithoutWebsite(lead);
@@ -85,7 +140,12 @@ export async function enrichLead(leadId: string, options: EnrichLeadOptions = {}
     lead.enrichmentStatus = 'FINDING_WEBSITE';
     await lead.save();
 
-    const companyResult = await researchCompany(companyName, lead.currentCompanyWebsite);
+    const companyResult = await researchCompany(companyName, lead.currentCompanyWebsite, undefined, {
+      location: lead.currentCompanyLocation,
+      title: lead.currentTitle,
+      headline: lead.headline,
+      about: lead.about,
+    });
     const website = companyResult.officialWebsite;
 
     if (!website) {
@@ -106,6 +166,17 @@ export async function enrichLead(leadId: string, options: EnrichLeadOptions = {}
     } catch (error) {
       lead.crawlStatus = 'failed';
       lead.enrichmentError = error instanceof Error ? error.message : 'Website crawl failed';
+    }
+
+    if (crawlEmails.length === 0) {
+      const searchEmails = await searchWebForEmails(companyName, lead.fullName, website);
+      for (const email of searchEmails) {
+        crawlEmails.push({
+          email,
+          sourceUrl: `Web Search: ${companyName}`,
+          emailType: 'UNKNOWN',
+        });
+      }
     }
     await lead.save();
 

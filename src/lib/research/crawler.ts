@@ -1,27 +1,88 @@
 import type { CrawledEmail } from '@/lib/types/lead';
 import { classifyEmailType } from '@/lib/email/emailUtils';
 import { isAllowedByRobots } from '@/lib/research/robots';
+import { fetchRenderedHtml } from '@/lib/research/browserFetch';
 
 const USER_AGENT = 'Mozilla/5.0 (compatible; LeadResearchBot/1.0; +https://example.com/bot)';
 
 const PRIORITY_PATHS = [
   '/',
+  
+  // Contact / Communication
   '/contact',
   '/contact-us',
+  '/contactus',
+  '/get-in-touch',
+  '/reach-us',
+  '/connect',
+  '/talk-to-us',
+  '/speak-to-us',
+
+  // Company / People
   '/about',
   '/about-us',
-  '/team',
-  '/leadership',
   '/company',
+  '/team',
+  '/our-team',
+  '/leadership',
+  '/management',
+  '/founders',
+  '/people',
+
+  // Sales / Demo
+  '/demo',
+  '/request-demo',
+  '/book-demo',
+  '/schedule-demo',
+  '/sales',
+  '/request-quote',
+  '/get-quote',
+
+  // Support / Help
   '/support',
+  '/help',
+  '/help-center',
+  '/customer-support',
+  '/customer-service',
+  '/contact-support',
+
+  // Careers / Jobs
   '/careers',
+  '/career',
+  '/jobs',
+  '/join-us',
+  '/work-with-us',
+  '/employment',
+
+  // Press / Media
   '/press',
   '/media',
+  '/news',
+  '/newsroom',
+  '/press-room',
+  '/press-kit',
+  '/media-kit',
+
+  // Partnerships / Business
+  '/partners',
+  '/partnerships',
+  '/business',
+  '/sales-contact',
+  '/vendors',
+  '/suppliers',
+
+  // Legal / Company Information
   '/privacy',
   '/privacy-policy',
   '/terms',
   '/terms-and-conditions',
   '/legal',
+
+  // Other potentially useful pages
+  '/locations',
+  '/offices',
+  '/faq',
+  '/faqs',
 ];
 
 const SKIP_EXTENSIONS =
@@ -47,6 +108,7 @@ export interface CrawlOptions {
   timeoutMs?: number;
   fetchPage?: FetchPageFn;
   fetchRobotsTxt?: (origin: string) => Promise<string | null>;
+  renderPage?: (url: string) => Promise<string | null>;
 }
 
 export interface CrawlFailure {
@@ -190,11 +252,20 @@ export async function crawlWebsite(baseUrl: string, options: CrawlOptions = {}):
   const timeoutMs = options.timeoutMs ?? 8000;
   const fetchPage = options.fetchPage ?? defaultFetchPage(timeoutMs);
   const fetchRobotsTxt = options.fetchRobotsTxt ?? defaultFetchRobotsTxt(fetchPage);
+  const renderPage = options.renderPage ?? fetchRenderedHtml;
 
   const origin = new URL(baseUrl).origin;
   const robotsTxt = await fetchRobotsTxt(origin);
 
-  const queue: Array<{ url: string; depth: number }> = PRIORITY_PATHS.map((path) => ({
+  const initialPaths: string[] = [];
+  for (const path of PRIORITY_PATHS) {
+    initialPaths.push(path);
+    if (path !== '/' && !path.endsWith('.xml') && !path.endsWith('.html')) {
+      initialPaths.push(`${path}.html`);
+    }
+  }
+
+  const queue: Array<{ url: string; depth: number }> = initialPaths.map((path) => ({
     url: `${origin}${path}`,
     depth: 0,
   }));
@@ -261,6 +332,24 @@ export async function crawlWebsite(baseUrl: string, options: CrawlOptions = {}):
         url,
         reason: error instanceof Error ? error.message : 'unknown_error',
       });
+    }
+  }
+
+  // Some sites render contact info (mailto links, footer email text) purely
+  // client-side, so a plain fetch of a JS-heavy homepage can come back
+  // empty of emails even though a real browser would see them. As a last
+  // resort, only when nothing was found any other way, render the homepage
+  // in a real (headless) browser and re-extract from that.
+  if (allEmails.length === 0 && isAllowedByRobots(robotsTxt, '/', USER_AGENT)) {
+    const renderedHtml = await renderPage(origin);
+    if (renderedHtml) {
+      const renderedEmails = extractEmailsFromPage(renderedHtml, origin);
+      if (renderedEmails.length > 0) {
+        allEmails.push(...renderedEmails);
+        if (!crawledUrls.some((u) => normalizeForDedup(u) === normalizeForDedup(origin))) {
+          crawledUrls.push(origin);
+        }
+      }
     }
   }
 

@@ -57,7 +57,7 @@ const SECTION_START_LABELS: Record<string, RegExp[]> = {
   education: [/^education$/i],
   skills: [/^skills$/i, /^featured skills and endorsements$/i],
   activity: [/^activity$/i],
-  recentActivity: [/^recent activity$/i],
+  recentActivity: [/^recent activity$/i, /^recent activity on linkedin$/i],
 };
 
 // Any of these ends a section, whichever field started it. Sales Navigator
@@ -84,10 +84,19 @@ const SECTION_STOP_LABELS: RegExp[] = [
   /^get insights about/i,
   /^generate lead iq$/i,
   /^search leads$/i,
-  /^current role$/i,
+  /^current roles?$/i,
   /^lead iq\s*new$/i,
   /^\d+ notifications? total$/i,
   /^chat with us$/i,
+  /^volunteering$/i,
+  /^languages$/i,
+  /^show all positions$/i,
+  /^what you share in common$/i,
+  /^shared groups$/i,
+  /^get introduced$/i,
+  /^filter by connection type$/i,
+  /^view all shared connections$/i,
+  /^view job descriptions$/i,
 ];
 
 function collectSectionContent(lines: string[], startIndex: number): string[] {
@@ -132,8 +141,16 @@ function extractCompanyLinkedInUrl(text: string): string | null {
 }
 
 function extractWebsite(text: string): string | null {
-  const match = text.match(/https?:\/\/(?!(?:[\w-]+\.)?linkedin\.com)[^\s<>"')]+/i);
-  return match ? match[0].replace(/[.,;]+$/, '') : null;
+  const matches = text.match(/https?:\/\/(?!(?:[\w-]+\.)?linkedin\.com)[^\s<>"'()[\]]+/ig);
+  if (!matches) return null;
+  const excluded = /(bing\.com|google\.com|yahoo\.com|duckduckgo\.com|twitter\.com|facebook\.com|instagram\.com|youtube\.com|wix\.com|vercel\.com|github\.com)/i;
+  for (const match of matches) {
+    const clean = match.replace(/[.,;:()[\]]+$/, '');
+    if (!excluded.test(clean)) {
+      return clean;
+    }
+  }
+  return null;
 }
 
 function extractEmail(text: string): string | null {
@@ -173,6 +190,21 @@ function extractFullName(lines: string[], cleanedFull: string): string {
   return candidate ? candidate : 'UNCERTAIN';
 }
 
+function parseTitleAndCompany(line: string): { title: string; company: string } | null {
+  const parts = line.split(/\s+at\s+/i);
+  if (parts.length >= 2) {
+    const title = parts[0].trim();
+    let companyRaw = parts.slice(1).join(' at ').trim();
+    // Clean markdown link: [Celux](url) -> Celux
+    companyRaw = companyRaw.replace(/\[([^\]]+)\]\([^\)]+\)/g, '$1');
+    const company = companyRaw.replace(/^[\[\]()]+|[\[\]()]+$/g, '').trim();
+    if (title.length > 0 && company.length > 0 && !title.toLowerCase().includes('worked')) {
+      return { title, company };
+    }
+  }
+  return null;
+}
+
 export function parseLeadContent(rawContent: string): ParsedLead {
   if (!rawContent || !rawContent.trim()) {
     throw new Error('Cannot parse empty content');
@@ -191,29 +223,42 @@ export function parseLeadContent(rawContent: string): ParsedLead {
   const linkedinProfileUrl = extractLinkedInUrl(cleanedFull);
   const currentCompanyLinkedInUrl = extractCompanyLinkedInUrl(cleanedFull);
 
-  // Current title / company: look for "<Title> at <Company>" pattern anywhere
   let currentTitle: string | null = null;
   let currentCompany: string | null = null;
   let headline: string | null = null;
-  const titleAtCompanyMatch = cleanedFull.match(
-    /([A-Za-z0-9 ,&/'-]{2,80})\s+at\s+([A-Za-z0-9 ,&.'-]{2,80})/
-  );
-  if (titleAtCompanyMatch) {
-    currentTitle = cleanLine(titleAtCompanyMatch[1]);
-    currentCompany = cleanLine(titleAtCompanyMatch[2]).split(/[\n,|]/)[0].trim();
-    headline = cleanLine(titleAtCompanyMatch[0]);
-  } else {
-    // No "X at Y" pattern found anywhere; fall back to the line after the name.
+
+  // 1. Try finding by Current roles/role section label first
+  const currentRoleLabelIndex = lines.findIndex((l) => /^(current\s+roles?|current\s+position|experience)$/i.test(l));
+  if (currentRoleLabelIndex >= 0 && lines[currentRoleLabelIndex + 1]) {
+    const parsed = parseTitleAndCompany(lines[currentRoleLabelIndex + 1]);
+    if (parsed) {
+      currentTitle = parsed.title;
+      currentCompany = parsed.company;
+      headline = lines[currentRoleLabelIndex + 1];
+    }
+  }
+
+  // 2. Fallback: search top lines for "<Title> at <Company>" pattern
+  if (!currentCompany) {
+    for (const line of lines.slice(0, 35)) {
+      const parsed = parseTitleAndCompany(line);
+      if (parsed) {
+        currentTitle = parsed.title;
+        currentCompany = parsed.company;
+        headline = line;
+        break;
+      }
+    }
+  }
+
+  // 3. Fallback: line after name
+  if (!currentCompany) {
     const nameIndex = lines.indexOf(fullName);
     headline =
       nameIndex >= 0 && lines[nameIndex + 1] && !/https?:\/\//.test(lines[nameIndex + 1])
         ? cleanLine(lines[nameIndex + 1])
         : null;
     currentTitle = headline;
-    currentCompany = null;
-  }
-
-  if (!currentCompany) {
     currentCompany = 'CURRENT_COMPANY_UNCERTAIN';
   }
 
@@ -248,6 +293,7 @@ export function parseLeadContent(rawContent: string): ParsedLead {
     currentCompany,
     currentCompanyLinkedInUrl,
     currentCompanyWebsite,
+    currentCompanyLocation: null,
     location,
     currentRoleStartDate: null,
     about,

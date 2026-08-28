@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { bulkDeleteLeadsApi, fetchLeads } from '@/lib/api/client';
 import type { LeadRecord } from '@/lib/types/lead';
 import FiltersPanel, { EMPTY_FILTERS, type FiltersState } from '@/components/leads/FiltersPanel';
-import LeadsTable from '@/components/leads/LeadsTable';
+import LeadsCards from '@/components/leads/LeadsCards';
 import LeadDetailsModal from '@/components/leads/LeadDetailsModal';
 import { PageHeader } from '@/components/ui/PageHeader';
 import Button from '@/components/ui/Button';
@@ -108,13 +108,16 @@ export default function DashboardPage() {
         </div>
       )}
 
-      <LeadsTable
+      <LeadsCards
         leads={leads}
         isLoading={isLoading}
         page={page}
         pages={pages}
         onPageChange={setPage}
-        onRowClick={setSelectedLead}
+        onOpenDetails={setSelectedLead}
+        onUpdated={(updated) => {
+          setLeads((prev) => prev.map((l) => (l._id === updated._id ? updated : l)));
+        }}
         selectedIds={selectedIds}
         onToggleSelect={toggleSelect}
         onToggleSelectAll={toggleSelectAll}

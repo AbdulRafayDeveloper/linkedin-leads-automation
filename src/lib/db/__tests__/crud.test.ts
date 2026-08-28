@@ -34,6 +34,7 @@ function makeProcessingResult(overrides: Partial<ProcessingResult['lead']> = {})
       currentCompany: 'Northwind Robotics',
       currentCompanyLinkedInUrl: null,
       currentCompanyWebsite: null,
+      currentCompanyLocation: null,
       location: null,
       currentRoleStartDate: null,
       about: null,

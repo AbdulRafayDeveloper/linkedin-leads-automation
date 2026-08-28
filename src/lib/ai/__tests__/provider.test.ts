@@ -5,7 +5,7 @@ jest.mock('@langchain/groq', () => ({ ChatGroq: jest.fn().mockImplementation((op
 jest.mock('@langchain/openai', () => ({ ChatOpenAI: jest.fn().mockImplementation((opts) => ({ opts, provider: 'openai' })) }));
 jest.mock('@langchain/ollama', () => ({ ChatOllama: jest.fn().mockImplementation((opts) => ({ opts, provider: 'ollama' })) }));
 
-import { getAiProviderName, getChatModel } from '../provider';
+import { getAiProviderName, getChatModel, getFallbackChatModels } from '../provider';
 
 const ORIGINAL_ENV = { ...process.env };
 
@@ -51,5 +51,17 @@ describe('getChatModel', () => {
     process.env.AI_PROVIDER = 'ollama';
     const model = (await getChatModel()) as unknown as { provider: string };
     expect(model.provider).toBe('ollama');
+  });
+});
+
+describe('getFallbackChatModels', () => {
+  afterEach(() => {
+    process.env = { ...ORIGINAL_ENV };
+  });
+
+  it('always returns Groq first and OpenAI second, regardless of AI_PROVIDER', async () => {
+    process.env.AI_PROVIDER = 'openai';
+    const models = (await getFallbackChatModels()) as unknown as Array<{ provider: string }>;
+    expect(models.map((m) => m.provider)).toEqual(['groq', 'openai']);
   });
 });

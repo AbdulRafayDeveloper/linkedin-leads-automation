@@ -1,6 +1,10 @@
 import { render, screen, fireEvent } from '@testing-library/react';
-import LeadsTable from '../LeadsTable';
+import LeadsCards from '../LeadsCards';
 import type { LeadRecord } from '@/lib/types/lead';
+
+jest.mock('@/lib/api/client', () => ({
+  updateLeadApi: jest.fn(),
+}));
 
 function makeLead(overrides: Partial<LeadRecord> = {}): LeadRecord {
   return {
@@ -49,16 +53,17 @@ function makeLead(overrides: Partial<LeadRecord> = {}): LeadRecord {
 
 const noop = () => {};
 
-describe('LeadsTable', () => {
+describe('LeadsCards', () => {
   it('shows a loading state', () => {
     render(
-      <LeadsTable
+      <LeadsCards
         leads={[]}
         isLoading
         page={1}
         pages={1}
         onPageChange={noop}
-        onRowClick={noop}
+        onOpenDetails={noop}
+        onUpdated={noop}
         selectedIds={new Set()}
         onToggleSelect={noop}
         onToggleSelectAll={noop}
@@ -69,13 +74,14 @@ describe('LeadsTable', () => {
 
   it('shows an empty state when there are no leads', () => {
     render(
-      <LeadsTable
+      <LeadsCards
         leads={[]}
         isLoading={false}
         page={1}
         pages={1}
         onPageChange={noop}
-        onRowClick={noop}
+        onOpenDetails={noop}
+        onUpdated={noop}
         selectedIds={new Set()}
         onToggleSelect={noop}
         onToggleSelectAll={noop}
@@ -84,53 +90,55 @@ describe('LeadsTable', () => {
     expect(screen.getByText(/No leads found/)).toBeInTheDocument();
   });
 
-  it('renders lead rows with key columns', () => {
+  it('renders one card per lead', () => {
     render(
-      <LeadsTable
-        leads={[makeLead()]}
+      <LeadsCards
+        leads={[makeLead({ _id: '1', fullName: 'Gus Gollings' }), makeLead({ _id: '2', fullName: 'Jane Doe' })]}
         isLoading={false}
         page={1}
         pages={1}
         onPageChange={noop}
-        onRowClick={noop}
+        onOpenDetails={noop}
+        onUpdated={noop}
         selectedIds={new Set()}
         onToggleSelect={noop}
         onToggleSelectAll={noop}
       />
     );
     expect(screen.getByText('Gus Gollings')).toBeInTheDocument();
-    expect(screen.getByText('Northwind Robotics')).toBeInTheDocument();
+    expect(screen.getByText('Jane Doe')).toBeInTheDocument();
   });
 
-  it('calls onRowClick when a row is clicked', () => {
-    const onRowClick = jest.fn();
-    const lead = makeLead();
+  it('calls onToggleSelectAll from the header checkbox', () => {
+    const onToggleSelectAll = jest.fn();
     render(
-      <LeadsTable
-        leads={[lead]}
+      <LeadsCards
+        leads={[makeLead()]}
         isLoading={false}
         page={1}
         pages={1}
         onPageChange={noop}
-        onRowClick={onRowClick}
+        onOpenDetails={noop}
+        onUpdated={noop}
         selectedIds={new Set()}
         onToggleSelect={noop}
-        onToggleSelectAll={noop}
+        onToggleSelectAll={onToggleSelectAll}
       />
     );
-    fireEvent.click(screen.getByText('Gus Gollings'));
-    expect(onRowClick).toHaveBeenCalledWith(lead);
+    fireEvent.click(screen.getByLabelText('Select all leads'));
+    expect(onToggleSelectAll).toHaveBeenCalled();
   });
 
-  it('disables the Previous button on the first page', () => {
+  it('disables Previous on the first page and enables Next when more pages exist', () => {
     render(
-      <LeadsTable
+      <LeadsCards
         leads={[makeLead()]}
         isLoading={false}
         page={1}
         pages={3}
         onPageChange={noop}
-        onRowClick={noop}
+        onOpenDetails={noop}
+        onUpdated={noop}
         selectedIds={new Set()}
         onToggleSelect={noop}
         onToggleSelectAll={noop}
@@ -140,23 +148,23 @@ describe('LeadsTable', () => {
     expect(screen.getByText('Next')).not.toBeDisabled();
   });
 
-  it('calls onToggleSelect when a row checkbox is clicked', () => {
-    const onToggleSelect = jest.fn();
-    const lead = makeLead();
+  it('calls onPageChange when Next is clicked', () => {
+    const onPageChange = jest.fn();
     render(
-      <LeadsTable
-        leads={[lead]}
+      <LeadsCards
+        leads={[makeLead()]}
         isLoading={false}
         page={1}
-        pages={1}
-        onPageChange={noop}
-        onRowClick={noop}
+        pages={3}
+        onPageChange={onPageChange}
+        onOpenDetails={noop}
+        onUpdated={noop}
         selectedIds={new Set()}
-        onToggleSelect={onToggleSelect}
+        onToggleSelect={noop}
         onToggleSelectAll={noop}
       />
     );
-    fireEvent.click(screen.getByLabelText('Select Gus Gollings'));
-    expect(onToggleSelect).toHaveBeenCalledWith('1');
+    fireEvent.click(screen.getByText('Next'));
+    expect(onPageChange).toHaveBeenCalledWith(2);
   });
 });

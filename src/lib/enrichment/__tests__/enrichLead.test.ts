@@ -58,6 +58,7 @@ function makeProcessingResult(overrides: Partial<ProcessingResult['lead']> = {})
       currentCompany: 'Northwind Robotics',
       currentCompanyLinkedInUrl: null,
       currentCompanyWebsite: null,
+      currentCompanyLocation: null,
       location: null,
       currentRoleStartDate: null,
       about: null,
@@ -263,6 +264,36 @@ describe('enrichLead', () => {
     expect(updated?.crawlStatus).toBe('failed');
     expect(updated?.enrichmentError).toContain('network unreachable');
     expect(updated?.enrichmentStatus).toBe('COMPLETED');
+  });
+
+  it('never runs two enrichments concurrently for the same lead, so emails are never duplicated', async () => {
+    const { createLead } = await import('@/lib/db/operations/create');
+    const { enrichLead } = await import('../enrichLead');
+    const { Lead } = await import('@/lib/db/models/Lead');
+
+    const saved = await createLead(makeProcessingResult());
+
+    (researchCompany as jest.Mock).mockResolvedValue(baseCompanyResult());
+    (crawlWebsite as jest.Mock).mockImplementation(async () => {
+      // Simulate a slow crawl so a second, concurrent call has a chance to race.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return {
+        crawledUrls: [],
+        emails: [{ email: 'contact@northwindrobotics.com', sourceUrl: 'https://x', emailType: 'GENERAL' }],
+        failedUrls: [],
+      };
+    });
+    (validateEmailEntries as jest.Mock).mockResolvedValue([
+      { email: 'contact@northwindrobotics.com', validationStatus: 'valid', validationDetails: '{}' },
+    ]);
+
+    // Simulate automatic enrichment on creation racing with a manual "Find
+    // Emails" / re-enrich request fired moments later.
+    await Promise.all([enrichLead(saved._id.toString()), enrichLead(saved._id.toString())]);
+
+    const updated = await Lead.findById(saved._id);
+    expect(updated?.emails).toHaveLength(1);
+    expect(crawlWebsite).toHaveBeenCalledTimes(1);
   });
 
   it('skips enrichment cleanly when the current company is uncertain', async () => {

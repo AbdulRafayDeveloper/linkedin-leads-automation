@@ -10,6 +10,14 @@ const resolverNoMx: DnsResolver = {
   },
 };
 
+function dnsErrorWithCode(code: string): DnsResolver {
+  return {
+    resolveMx: async () => {
+      throw Object.assign(new Error(code), { code });
+    },
+  };
+}
+
 describe('validateEmail', () => {
   it('returns NOT_FOUND when no email is provided', async () => {
     const result = await validateEmail(null);
@@ -64,6 +72,27 @@ describe('validateEmail', () => {
   it('treats disposable domains case-insensitively', async () => {
     const result = await validateEmail('user@MAILINATOR.com', resolverWithMx);
     expect(result.validationChecks?.isDisposable).toBe(true);
+  });
+
+  it('returns NEEDS_REVIEW (not FAIL) when the DNS resolver itself is unreachable', async () => {
+    const result = await validateEmail('gus@northwindrobotics.com', dnsErrorWithCode('ECONNREFUSED'));
+    expect(result.status).toBe('NEEDS_REVIEW');
+    expect(result.reasons.some((r) => r.includes('could not be verified'))).toBe(true);
+  });
+
+  it('treats a DNS timeout the same way as a resolver connection failure', async () => {
+    const result = await validateEmail('gus@northwindrobotics.com', dnsErrorWithCode('ETIMEOUT'));
+    expect(result.status).toBe('NEEDS_REVIEW');
+  });
+
+  it('still fails a disposable domain even when the DNS resolver is unreachable', async () => {
+    const result = await validateEmail('user@mailinator.com', dnsErrorWithCode('ECONNREFUSED'));
+    expect(result.status).toBe('FAIL');
+  });
+
+  it('still fails a genuinely nonexistent domain (ENOTFOUND) rather than marking it unverifiable', async () => {
+    const result = await validateEmail('gus@nomx-domain.com', dnsErrorWithCode('ENOTFOUND'));
+    expect(result.status).toBe('FAIL');
   });
 });
 

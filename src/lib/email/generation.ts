@@ -1,4 +1,6 @@
 import type { CompanyResearchResult, GeneratedEmail, ParsedLead } from '@/lib/types/lead';
+import { buildOutreachEmailPrompt } from '@/lib/ai/prompts/outreachEmailPrompt';
+import { formatSenderSignature, senderProfile, type SenderProfile } from '@/lib/config/senderProfile';
 
 const MAX_SUBJECT_LENGTH = 350;
 
@@ -27,24 +29,6 @@ function collectSignals(lead: ParsedLead, company: CompanyResearchResult): strin
   return signals;
 }
 
-function buildPrompt(lead: ParsedLead, company: CompanyResearchResult, signals: string[]): string {
-  return `You are writing a short, personalized cold outreach email.
-
-Recipient first name: ${firstNameOf(lead.fullName)}
-
-Only use the following verified facts. Never invent details not listed here:
-${signals.length ? signals.map((s) => `- ${s}`).join('\n') : '- (no additional signals available; keep the email general but still personalized by name and role)'}
-
-Writing rules (follow exactly):
-- Subject line: maximum 350 characters, compelling, no dashes or em-dashes.
-- Body: minimal commas (only for genuine lists), no abbreviations or shortforms, no dashes or em-dashes, seamless and natural language.
-- Body must start with the recipient's first name.
-- Do not fabricate any claim, activity, or detail not present in the verified facts above.
-
-Respond ONLY with strict JSON in this exact shape:
-{"subject": "...", "body": "...", "personalizationSignalsUsed": ["..."]}`;
-}
-
 function stripDashes(text: string): string {
   return text
     .replace(/\s*[—–]\s*/g, ', ')
@@ -55,8 +39,23 @@ function stripDashes(text: string): string {
 
 function ensureStartsWithFirstName(body: string, firstName: string): string {
   const trimmed = body.trim();
-  if (trimmed.toLowerCase().startsWith(firstName.toLowerCase())) return trimmed;
-  return `${firstName}, ${trimmed.charAt(0).toLowerCase()}${trimmed.slice(1)}`;
+  const lowerTrimmed = trimmed.toLowerCase();
+  
+  if (lowerTrimmed.startsWith(`hi ${firstName.toLowerCase()}`)) {
+    return trimmed;
+  }
+  
+  if (lowerTrimmed.startsWith(firstName.toLowerCase())) {
+    const rest = trimmed.slice(firstName.length).trim();
+    const cleanRest = rest.startsWith(',') ? rest.slice(1).trim() : rest;
+    return `Hi ${firstName},\n\n${cleanRest}`;
+  }
+  
+  return `Hi ${firstName},\n\n${trimmed}`;
+}
+
+function appendSignature(body: string, sender: SenderProfile): string {
+  return `${body}\n\n${formatSenderSignature(sender)}`;
 }
 
 function extractContent(raw: { content: unknown } | string): string {
@@ -71,7 +70,11 @@ function extractContent(raw: { content: unknown } | string): string {
   return '';
 }
 
-function buildFallbackEmail(lead: ParsedLead, signalsUsed: string[]): GeneratedEmail {
+function buildFallbackEmail(
+  lead: ParsedLead,
+  signalsUsed: string[],
+  sender: SenderProfile
+): GeneratedEmail {
   const firstName = firstNameOf(lead.fullName);
   const companyPhrase =
     lead.currentCompany && lead.currentCompany !== 'CURRENT_COMPANY_UNCERTAIN'
@@ -83,11 +86,14 @@ function buildFallbackEmail(lead: ParsedLead, signalsUsed: string[]): GeneratedE
     `Quick question about your work${titlePhrase}${companyPhrase}`
   ).slice(0, MAX_SUBJECT_LENGTH);
 
-  const body = ensureStartsWithFirstName(
-    stripDashes(
-      `${firstName}, I came across your profile${titlePhrase}${companyPhrase} and wanted to reach out. I would love to learn more about the work you are doing and share how we might be able to help. Would you be open to a short conversation.`
+  const body = appendSignature(
+    ensureStartsWithFirstName(
+      stripDashes(
+        `${firstName}, I wanted to reach out about your work${titlePhrase}${companyPhrase}. I am ${sender.name}, a ${sender.title}, and I would love to learn more about what you are building and share how we might be able to help. Would you be open to a short conversation.`
+      ),
+      firstName
     ),
-    firstName
+    sender
   );
 
   return {
@@ -102,17 +108,18 @@ function buildFallbackEmail(lead: ParsedLead, signalsUsed: string[]): GeneratedE
 export async function generatePersonalizedEmail(
   lead: ParsedLead,
   company: CompanyResearchResult,
-  model?: EmailGeneratorModel
+  model?: EmailGeneratorModel,
+  sender: SenderProfile = senderProfile
 ): Promise<GeneratedEmail> {
   const signals = collectSignals(lead, company);
   const firstName = firstNameOf(lead.fullName);
 
   if (!model) {
-    return buildFallbackEmail(lead, signals);
+    return buildFallbackEmail(lead, signals, sender);
   }
 
   try {
-    const prompt = buildPrompt(lead, company, signals);
+    const prompt = buildOutreachEmailPrompt({ recipientFirstName: firstName, signals, sender });
     const response = await model.invoke(prompt);
     const raw = extractContent(response);
     const jsonMatch = raw.match(/\{[\s\S]*\}/);
@@ -131,9 +138,12 @@ export async function generatePersonalizedEmail(
       warnings.push('Subject was truncated to 350 characters');
     }
 
-    const body = ensureStartsWithFirstName(stripDashes(parsed.body || ''), firstName);
+    const body = appendSignature(
+      ensureStartsWithFirstName(stripDashes(parsed.body || ''), firstName),
+      sender
+    );
 
-    if (!subject || !body) {
+    if (!subject || !parsed.body) {
       throw new Error('Model returned an incomplete email');
     }
 
@@ -147,7 +157,7 @@ export async function generatePersonalizedEmail(
       warnings,
     };
   } catch (error) {
-    const fallback = buildFallbackEmail(lead, signals);
+    const fallback = buildFallbackEmail(lead, signals, sender);
     fallback.warnings.push(
       `AI generation failed: ${error instanceof Error ? error.message : 'unknown error'}`
     );
