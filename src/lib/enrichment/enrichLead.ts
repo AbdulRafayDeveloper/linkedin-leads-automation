@@ -2,7 +2,7 @@ import { connectToMongoDB } from '@/lib/db/connection';
 import { Lead, type EmailEntrySubdocument, type LeadDocument } from '@/lib/db/models/Lead';
 import { researchCompany } from '@/lib/research/research';
 import { crawlWebsite, type CrawlOptions } from '@/lib/research/crawler';
-import { classifyEmailType, dedupeEmails, normalizeEmail } from '@/lib/email/emailUtils';
+import { dedupeEmails, normalizeEmail } from '@/lib/email/emailUtils';
 import { validateEmailEntries } from '@/lib/email/validation';
 import type {
   EmailEntryValidationStatus,

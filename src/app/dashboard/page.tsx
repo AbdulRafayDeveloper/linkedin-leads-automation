@@ -6,6 +6,9 @@ import type { LeadRecord } from '@/lib/types/lead';
 import FiltersPanel, { EMPTY_FILTERS, type FiltersState } from '@/components/leads/FiltersPanel';
 import LeadsTable from '@/components/leads/LeadsTable';
 import LeadDetailsModal from '@/components/leads/LeadDetailsModal';
+import { PageHeader } from '@/components/ui/PageHeader';
+import Button from '@/components/ui/Button';
+import { AlertTriangleIcon, TrashIcon } from '@/components/ui/Icons';
 
 export default function DashboardPage() {
   const [leads, setLeads] = useState<LeadRecord[]>([]);
@@ -80,25 +83,30 @@ export default function DashboardPage() {
   };
 
   return (
-    <div className="mx-auto max-w-6xl p-6">
-      <div className="mb-6 flex items-center justify-between">
-        <h1 className="text-2xl font-semibold">My Leads</h1>
-        {selectedIds.size > 0 && (
-          <button
-            type="button"
-            onClick={handleBulkDelete}
-            className="rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700"
-          >
-            Delete {selectedIds.size} selected
-          </button>
-        )}
-      </div>
+    <div className="mx-auto max-w-6xl px-6 py-8">
+      <PageHeader
+        title="My Leads"
+        description="Browse, filter, and manage leads discovered through the research pipeline."
+        actions={
+          selectedIds.size > 0 && (
+            <Button type="button" variant="destructive" size="sm" onClick={handleBulkDelete}>
+              <TrashIcon width={14} height={14} />
+              Delete {selectedIds.size} selected
+            </Button>
+          )
+        }
+      />
 
       <div className="mb-4">
         <FiltersPanel filters={filters} onChange={handleFiltersChange} />
       </div>
 
-      {error && <p className="mb-4 text-sm text-red-600">{error}</p>}
+      {error && (
+        <div className="mb-4 flex items-center gap-2 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          <AlertTriangleIcon width={16} height={16} />
+          {error}
+        </div>
+      )}
 
       <LeadsTable
         leads={leads}

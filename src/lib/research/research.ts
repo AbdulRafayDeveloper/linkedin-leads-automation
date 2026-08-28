@@ -73,6 +73,43 @@ function guessDomainCandidates(companyName: string): string[] {
   return [`https://www.${slug}.com`, `https://${slug}.com`];
 }
 
+async function searchWebForCompanyWebsite(companyName: string): Promise<string | null> {
+  try {
+    const query = encodeURIComponent(`${companyName} company official website`);
+    const response = await fetch(`https://html.duckduckgo.com/html/?q=${query}`, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      }
+    });
+    if (!response.ok) return null;
+    const html = await response.text();
+    const regex = /uddg=([^&"']+)/g;
+    let match;
+    const urls: string[] = [];
+    while ((match = regex.exec(html)) !== null) {
+      try {
+        const decoded = decodeURIComponent(match[1]);
+        const url = new URL(decoded);
+        if (url.protocol === 'http:' || url.protocol === 'https:') {
+          if (!url.hostname.includes('duckduckgo.com') && 
+              !url.hostname.includes('bing.com') && 
+              !url.hostname.includes('google.com') && 
+              !url.hostname.includes('linkedin.com') &&
+              !url.hostname.includes('twitter.com') &&
+              !url.hostname.includes('facebook.com')) {
+            urls.push(url.origin);
+          }
+        }
+      } catch {
+        // ignore
+      }
+    }
+    return urls[0] || null;
+  } catch {
+    return null;
+  }
+}
+
 export async function researchCompany(
   companyName: string,
   providedWebsite: string | null,
@@ -98,7 +135,16 @@ export async function researchCompany(
     const origin = normalizeToOrigin(providedWebsite);
     if (origin) candidates.push(origin);
   } else {
-    candidates.push(...guessDomainCandidates(companyName));
+    const searchUrl = await searchWebForCompanyWebsite(companyName);
+    if (searchUrl) {
+      candidates.push(searchUrl);
+    }
+    const guesses = guessDomainCandidates(companyName);
+    for (const guess of guesses) {
+      if (!candidates.includes(guess)) {
+        candidates.push(guess);
+      }
+    }
   }
 
   for (const candidate of candidates) {
