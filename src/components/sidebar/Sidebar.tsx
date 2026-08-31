@@ -9,6 +9,7 @@ import { HomeIcon, MenuIcon, PlusCircleIcon, UsersIcon, XIcon } from '@/componen
 const NAV_ITEMS = [
   { href: '/', label: 'Dashboard', icon: HomeIcon },
   { href: '/process', label: 'Process New Lead', icon: PlusCircleIcon },
+  { href: '/lead-ingestion', label: 'Client Ingestion', icon: PlusCircleIcon },
   { href: '/dashboard', label: 'My Leads', icon: UsersIcon },
 ];
 
