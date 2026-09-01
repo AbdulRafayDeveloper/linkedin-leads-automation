@@ -1,26 +1,32 @@
 import { extractWithAi, type AiChatModel } from '../aiExtractor';
 
 describe('aiExtractor', () => {
-  it('extracts structured details from LLM JSON response', async () => {
+  it('extracts structured candidate & current company details from LLM JSON response', async () => {
     const mockModel: AiChatModel = {
       invoke: jest.fn().mockResolvedValue({
-        content: JSON.stringify({
-          summary: 'Jane Doe is a Senior Full Stack Engineer at Acme Corporation.',
-          fullName: 'Jane Doe',
-          email: 'jane.doe@acme.com',
-          phone: '+1 (555) 019-2834',
-          website: 'https://www.acme.com',
-        }),
+        content: `\`\`\`json
+{
+  "personSummary": "Jane Doe is a Senior Full Stack Engineer at Acme Corp.",
+  "fullName": "Jane Doe",
+  "companyName": "Acme Corp",
+  "jobTitle": "Lead AI Architect",
+  "websiteUrl": "https://acme.com",
+  "email": "jane.doe@acme.com",
+  "phone": "+1 (555) 019-2834"
+}
+\`\`\``,
       }),
     };
 
     const result = await extractWithAi('some raw text', [mockModel]);
 
-    expect(result.summary).toBe('Jane Doe is a Senior Full Stack Engineer at Acme Corporation.');
+    expect(result.personSummary).toBe('Jane Doe is a Senior Full Stack Engineer at Acme Corp.');
     expect(result.fullName).toBe('Jane Doe');
+    expect(result.companyName).toBe('Acme Corp');
+    expect(result.jobTitle).toBe('Lead AI Architect');
+    expect(result.websiteUrl).toBe('https://acme.com');
     expect(result.email).toBe('jane.doe@acme.com');
     expect(result.phoneNumber).toBe('+1 (555) 019-2834');
-    expect(result.websiteUrl).toBe('https://www.acme.com');
   });
 
   it('falls back to second model if first fails', async () => {
@@ -30,11 +36,13 @@ describe('aiExtractor', () => {
     const backupModel: AiChatModel = {
       invoke: jest.fn().mockResolvedValue({
         content: JSON.stringify({
-          summary: 'Fallback summary.',
+          personSummary: 'Fallback summary.',
           fullName: 'Jane Fallback',
+          companyName: 'Beta Corp',
+          jobTitle: 'Developer',
+          websiteUrl: null,
           email: null,
           phone: null,
-          website: null,
         }),
       }),
     };
@@ -42,6 +50,7 @@ describe('aiExtractor', () => {
     const result = await extractWithAi('some raw text', [failingModel, backupModel]);
 
     expect(result.fullName).toBe('Jane Fallback');
-    expect(result.summary).toBe('Fallback summary.');
+    expect(result.companyName).toBe('Beta Corp');
+    expect(result.personSummary).toBe('Fallback summary.');
   });
 });

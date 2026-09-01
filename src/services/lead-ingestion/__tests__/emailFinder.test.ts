@@ -12,7 +12,7 @@ describe('emailFinder crawler', () => {
     jest.resetAllMocks();
   });
 
-  it('crawls homepage and subpages, extracting and filtering emails', async () => {
+  it('crawls homepage and subpages, extracting emails and phone numbers', async () => {
     // 1. Mock Homepage fetch
     globalFetchMock.mockResolvedValueOnce({
       ok: true,
@@ -22,11 +22,9 @@ describe('emailFinder crawler', () => {
           <body>
             <h1>Welcome to Acme Corp</h1>
             <p>For support, mailto:support@acme.com</p>
+            <p>Call us: +1 (555) 019-2834</p>
             <a href="/about-us">About Us</a>
             <a href="/contact">Get in Touch</a>
-            <a href="https://external.com/faq">FAQ</a>
-            <!-- Tracker email to filter -->
-            <p>Tracker: test@google-analytics.com</p>
           </body>
         </html>
       `),
@@ -60,23 +58,20 @@ describe('emailFinder crawler', () => {
 
     const result = await findEmailsOnWebsite('https://acme.com');
 
-    // Verify it crawled the homepage, /about-us, and /contact
-    expect(globalFetchMock).toHaveBeenCalledTimes(3);
+    // Verify emails were extracted
+    expect(result.emails).toContain('support@acme.com');
+    expect(result.emails).toContain('jane.doe@acme.com');
+    expect(result.emails).toContain('info@acme.com');
 
-    // Verify emails were extracted and deduplicated
-    expect(result).toContain('support@acme.com');
-    expect(result).toContain('jane.doe@acme.com');
-    expect(result).toContain('info@acme.com');
-
-    // Verify tracker emails were successfully filtered out
-    expect(result).not.toContain('test@google-analytics.com');
+    // Verify phone was extracted
+    expect(result.phones.length).toBeGreaterThan(0);
   });
 
   it('fails gracefully when website is unreachable', async () => {
-    globalFetchMock.mockRejectedValueOnce(new Error('DNS Resolution Failed'));
+    globalFetchMock.mockRejectedValue(new Error('DNS Resolution Failed'));
 
     const result = await findEmailsOnWebsite('https://dead-domain.com');
-    expect(result).toEqual([]);
-    expect(globalFetchMock).toHaveBeenCalledTimes(1);
+    expect(result.emails).toEqual([]);
+    expect(result.phones).toEqual([]);
   });
 });

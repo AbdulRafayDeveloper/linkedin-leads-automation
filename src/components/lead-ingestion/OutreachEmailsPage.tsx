@@ -215,7 +215,18 @@ function EmailDraftCard({
   return (
     <Card className="mb-6 overflow-hidden border border-slate-200 shadow-sm transition-all hover:shadow-md">
       <CardHeader
-        title={lead.fullName || 'Uncertain Lead'}
+        title={
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-bold text-slate-900">
+              {lead.companyName ? `${lead.companyName} (${lead.fullName || 'Candidate'})` : (lead.fullName || 'Uncertain Lead')}
+            </span>
+            {lead.jobTitle && (
+              <span className="text-[11px] px-2 py-0.5 rounded font-semibold bg-indigo-50 text-indigo-700 border border-indigo-100">
+                {lead.jobTitle}
+              </span>
+            )}
+          </div>
+        }
         action={
           <div className="flex items-center gap-3">
             <span className="text-xs text-slate-500 font-semibold truncate max-w-[140px] sm:max-w-none">

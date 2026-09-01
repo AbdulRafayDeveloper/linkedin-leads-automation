@@ -1,162 +1,155 @@
 import { connectToMongoDB } from '@/lib/db/connection';
 import { Client, type ClientDocument } from '@/lib/db/models/Client';
-import { LeadIngestion, type LeadIngestionDocument } from '@/lib/db/models/LeadIngestion';
-import { extractWithRegex } from './regexExtractor';
-import { extractWithAi } from './aiExtractor';
+import { LeadIngestion, type LeadIngestionDocument, type VerifiedEmailItem } from '@/lib/db/models/LeadIngestion';
 import { findEmailsOnWebsite } from './emailFinder';
 import { verifyEmailSmtp } from './smtpVerifier';
 import mongoose from 'mongoose';
 
 export async function createClient(name: string): Promise<ClientDocument> {
   await connectToMongoDB();
-  const client = new Client({ name });
-  return await client.save();
+  const trimmedName = name.trim();
+  const existing = await Client.findOne({ name: trimmedName });
+  if (existing) return existing;
+  return new Client({ name: trimmedName }).save();
 }
 
 export async function getClients(): Promise<ClientDocument[]> {
   await connectToMongoDB();
-  return await Client.find().sort({ createdAt: -1 });
+  return Client.find().sort({ createdAt: -1 });
 }
 
-export async function startWebsiteDiscovery(leadId: string): Promise<LeadIngestionDocument | null> {
+export async function startWebsiteDiscovery(
+  leadId: string,
+  additionalUrls: string[] = []
+): Promise<LeadIngestionDocument | null> {
   await connectToMongoDB();
-
-  if (!mongoose.Types.ObjectId.isValid(leadId)) {
-    throw new Error('Invalid lead ID');
-  }
+  if (!mongoose.Types.ObjectId.isValid(leadId)) throw new Error('Invalid lead ID');
 
   const doc = await LeadIngestion.findById(leadId);
-  if (!doc || !doc.websiteUrl) {
-    return doc;
-  }
+  if (!doc) return null;
 
   doc.crawlStatus = 'in_progress';
+  const urlSet = Array.from(new Set([
+    ...(doc.additionalUrls ?? []),
+    ...additionalUrls,
+    ...(doc.portfolioUrl ? [doc.portfolioUrl] : []),
+  ]));
+  doc.additionalUrls = urlSet;
   await doc.save();
 
   try {
-    const discovered = await findEmailsOnWebsite(doc.websiteUrl);
-    doc.discoveredEmails = discovered;
+    const targetUrl = doc.websiteUrl ?? doc.portfolioUrl ?? additionalUrls[0] ?? '';
+    const crawl = await findEmailsOnWebsite(targetUrl, doc.additionalUrls);
+    doc.discoveredEmails = crawl.emails;
+    doc.discoveredPhones = crawl.phones;
+    doc.siteType = crawl.siteType;
 
-    if (discovered.length > 0) {
-      // Pick first email and verify it
-      const primaryEmail = discovered[0];
-      doc.email = primaryEmail;
-      doc.emailValidationStatus = 'pending';
-      await doc.save();
+    const emailsToVerify = Array.from(new Set([...(doc.email ? [doc.email] : []), ...crawl.emails]));
+    const verified: VerifiedEmailItem[] = [];
+    await Promise.all(
+      emailsToVerify.map(async (em) => {
+        try {
+          const r = await verifyEmailSmtp(em);
+          verified.push({ email: em, status: r.status });
+        } catch {
+          verified.push({ email: em, status: 'unknown' });
+        }
+      })
+    );
 
-      try {
-        const verifyResult = await verifyEmailSmtp(primaryEmail);
-        doc.emailValidationStatus = verifyResult.status;
-        doc.emailValidationDetails = JSON.stringify({
-          reasons: verifyResult.reasons,
-        });
-      } catch (err) {
-        doc.emailValidationStatus = 'unknown';
-        doc.emailValidationDetails = JSON.stringify({
-          reasons: [`Verification error: ${err instanceof Error ? err.message : 'Unknown error'}`],
-        });
-      }
+    doc.verifiedEmails = verified;
+    if (emailsToVerify.length > 0) {
+      if (!doc.email) doc.email = emailsToVerify[0];
+      doc.emailValidationStatus = verified.find((v) => v.email === doc.email)?.status ?? 'unknown';
     } else {
-      // No emails found
       doc.emailValidationStatus = 'unknown';
-      doc.emailValidationDetails = JSON.stringify({
-        reasons: ['No contact emails were found on the website pages crawled'],
-      });
     }
-
     doc.crawlStatus = 'completed';
-    return await doc.save();
-  } catch (error) {
+    return doc.save();
+  } catch {
     doc.crawlStatus = 'failed';
     await doc.save().catch(() => undefined);
-    throw error;
+    return doc;
   }
-}
-
-export async function createAndProcessLead(
-  clientId: string,
-  rawText: string
-): Promise<LeadIngestionDocument> {
-  await connectToMongoDB();
-
-  if (!mongoose.Types.ObjectId.isValid(clientId)) {
-    throw new Error('Invalid client ID');
-  }
-
-  const doc = new LeadIngestion({
-    clientId: new mongoose.Types.ObjectId(clientId),
-    rawText,
-    status: 'processing',
-    crawlStatus: 'not_started',
-  });
-  await doc.save();
-
-  try {
-    const [regexData, aiData] = await Promise.all([
-      Promise.resolve(extractWithRegex(rawText)),
-      extractWithAi(rawText).catch(() => ({
-        summary: 'Failed to generate AI summary.',
-        fullName: null,
-        email: null,
-        phoneNumber: null,
-        websiteUrl: null,
-      })),
-    ]);
-
-    doc.fullName = aiData.fullName || regexData.fullName;
-    doc.email = aiData.email || regexData.email;
-    doc.phoneNumber = aiData.phoneNumber || regexData.phoneNumber;
-    doc.websiteUrl = aiData.websiteUrl || regexData.websiteUrl;
-    doc.summary = aiData.summary;
-    doc.status = 'completed';
-
-    const saved = await doc.save();
-
-    // Trigger website crawling in the background if website is present
-    if (saved.websiteUrl) {
-      startWebsiteDiscovery(saved._id.toString()).catch(() => undefined);
-    }
-
-    return saved;
-  } catch (error) {
-    doc.status = 'failed';
-    await doc.save().catch(() => undefined);
-    throw error;
-  }
-}
-
-export async function updateLeadWebsite(
-  id: string,
-  websiteUrl: string
-): Promise<LeadIngestionDocument> {
-  await connectToMongoDB();
-
-  if (!mongoose.Types.ObjectId.isValid(id)) {
-    throw new Error('Invalid lead ingestion ID');
-  }
-
-  const doc = await LeadIngestion.findById(id);
-  if (!doc) {
-    throw new Error('Lead ingestion record not found');
-  }
-
-  doc.websiteUrl = websiteUrl.trim();
-  const saved = await doc.save();
-
-  // Trigger website crawling in the background
-  startWebsiteDiscovery(saved._id.toString()).catch(() => undefined);
-
-  return saved;
 }
 
 export async function getIngestedLeads(clientId: string): Promise<LeadIngestionDocument[]> {
   await connectToMongoDB();
+  if (!mongoose.Types.ObjectId.isValid(clientId)) throw new Error('Invalid client ID');
+  return LeadIngestion.find({ clientId: new mongoose.Types.ObjectId(clientId) }).sort({ createdAt: -1 });
+}
 
-  if (!mongoose.Types.ObjectId.isValid(clientId)) {
-    throw new Error('Invalid client ID');
+export async function updateLeadWebsite(
+  id: string,
+  websiteUrl: string,
+  additionalUrls: string[] = []
+): Promise<LeadIngestionDocument> {
+  await connectToMongoDB();
+  if (!mongoose.Types.ObjectId.isValid(id)) throw new Error('Invalid lead ID');
+  const doc = await LeadIngestion.findById(id);
+  if (!doc) throw new Error('Lead not found');
+  doc.websiteUrl = websiteUrl.trim();
+  if (additionalUrls.length > 0) {
+    doc.additionalUrls = Array.from(new Set([...doc.additionalUrls, ...additionalUrls]));
+  }
+  const saved = await doc.save();
+  startWebsiteDiscovery(saved._id.toString(), additionalUrls).catch(() => undefined);
+  return saved;
+}
+
+/** @deprecated Use /api/lead-ingestion/stream for new ingestion */
+export async function createAndProcessLead(
+  _clientIdInput?: string,
+  rawText?: string
+): Promise<LeadIngestionDocument[]> {
+  await connectToMongoDB();
+  const contentText = rawText ?? '';
+  if (!contentText.trim()) throw new Error('Content text is required');
+
+  // Lazy import to avoid circular deps at module load
+  const { extractWithAi, mapUrlsToCompaniesWithAi } = await import('./aiExtractor');
+  const aiData = await extractWithAi(contentText).catch(() => ({
+    fullName: 'Unknown Candidate',
+    personSummary: '',
+    currentCompanies: [{ companyName: 'Unspecified Company', jobTitle: 'Professional', workPeriod: null, websiteUrl: null, roleSummary: '' }],
+    rawUrls: [],
+    rawEmails: [],
+    rawPhones: [],
+  }));
+
+  const { companies: mapped, portfolioUrl } = await mapUrlsToCompaniesWithAi(
+    aiData.currentCompanies,
+    aiData.rawUrls
+  );
+
+  const clientName = aiData.fullName ?? 'Unknown Candidate';
+  let clientDoc = await Client.findOne({ name: clientName });
+  if (!clientDoc) clientDoc = await new Client({ name: clientName }).save();
+
+  const primary = mapped[0] ?? { companyName: 'Unspecified Company', jobTitle: 'Professional', workPeriod: null, websiteUrl: null, roleSummary: '' };
+
+  const doc = await new LeadIngestion({
+    clientId: clientDoc._id,
+    rawText: contentText,
+    fullName: aiData.fullName,
+    companyName: primary.companyName,
+    jobTitle: primary.jobTitle,
+    workPeriod: primary.workPeriod,
+    email: aiData.rawEmails[0] ?? null,
+    phoneNumber: aiData.rawPhones[0] ?? null,
+    websiteUrl: primary.websiteUrl,
+    portfolioUrl,
+    summary: aiData.personSummary,
+    currentCompanies: mapped,
+    discoveredEmails: aiData.rawEmails,
+    discoveredPhones: aiData.rawPhones,
+    status: 'completed',
+    crawlStatus: 'not_started',
+  }).save();
+
+  if (doc.websiteUrl ?? doc.portfolioUrl) {
+    startWebsiteDiscovery(doc._id.toString()).catch(() => undefined);
   }
 
-  return await LeadIngestion.find({ clientId: new mongoose.Types.ObjectId(clientId) }).sort({
-    createdAt: -1,
-  });
+  return [doc];
 }

@@ -8,10 +8,11 @@ interface RouteParams {
   params: Promise<{ id: string }>;
 }
 
-export async function POST(_request: NextRequest, { params }: RouteParams) {
+export async function POST(request: NextRequest, { params }: RouteParams) {
   try {
     const { id } = await params;
-    const result = await startWebsiteDiscovery(id);
+    const body = (await request.json().catch(() => ({}))) as { additionalUrls?: string[] };
+    const result = await startWebsiteDiscovery(id, body.additionalUrls || []);
     if (!result) {
       return jsonError('Lead record not found', 404);
     }
