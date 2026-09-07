@@ -244,21 +244,7 @@ export default function PromptSettingsPage() {
             </CardContent>
           </Card>
 
-          {/* Signature Preview Box */}
-          <Card className="border border-slate-200 bg-slate-50/50">
-            <CardHeader title="Generated Signature Block Preview" />
-            <CardContent className="pt-2">
-              <div className="p-4 bg-white border border-slate-200 rounded-md text-xs text-slate-800 font-mono leading-relaxed">
-                <p>Portfolio: {senderPortfolioUrl}</p>
-                <p>LinkedIn: {senderLinkedinUrl}</p>
-                <p>Phone / WhatsApp: {senderPhone}</p>
-                <br />
-                <p>Best regards,</p>
-                <p className="font-bold">{senderName}</p>
-                <p className="text-slate-500">{senderTitle}</p>
-              </div>
-            </CardContent>
-          </Card>
+
         </form>
       )}
     </div>

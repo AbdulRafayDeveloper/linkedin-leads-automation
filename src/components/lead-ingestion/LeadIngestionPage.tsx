@@ -46,6 +46,8 @@ export default function LeadIngestionPage() {
         const chunks = buf.split('\n\n');
         buf = chunks.pop() ?? '';
 
+        let streamError: string | null = null;
+
         for (const chunk of chunks) {
           const eventMatch = chunk.match(/^event:\s*(.+)/m);
           const dataMatch = chunk.match(/^data:\s*([\s\S]+)/m);
@@ -56,7 +58,14 @@ export default function LeadIngestionPage() {
             if (event === 'client_created' && data.leadId) {
               leadId = data.leadId as string;
             }
+            if (event === 'error' && data.message) {
+              streamError = data.message as string;
+            }
           } catch { /* ignore */ }
+        }
+
+        if (streamError) {
+          throw new Error(streamError);
         }
       }
 

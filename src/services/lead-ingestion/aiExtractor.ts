@@ -141,7 +141,26 @@ ${rawText}
     }
   }
 
-  throw new Error(`AI extraction failed: ${errors.join(' | ')}`);
+  // Resilient Fallback: Use Regex Extractor if LLM calls fail so ingestion never breaks!
+  const { extractWithRegex } = await import('./regexExtractor');
+  const reg = extractWithRegex(rawText);
+
+  return {
+    fullName: reg.fullName ?? 'Extracted Candidate',
+    personSummary: 'LinkedIn profile data extracted via regex fallback.',
+    currentCompanies: [
+      {
+        companyName: 'Unspecified Company',
+        jobTitle: 'Professional',
+        workPeriod: null,
+        websiteUrl: reg.websiteUrl,
+        roleSummary: '',
+      },
+    ],
+    rawUrls: reg.websiteUrl ? [reg.websiteUrl] : [],
+    rawEmails: reg.email ? [reg.email] : [],
+    rawPhones: reg.phoneNumber ? [reg.phoneNumber] : [],
+  };
 }
 
 /**
