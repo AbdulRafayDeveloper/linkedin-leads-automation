@@ -232,6 +232,14 @@ export function ArrowRightIcon(props: IconProps) {
   );
 }
 
+export function ArrowLeftIcon(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <path d="M20 12H4M11 19l-7-7 7-7" />
+    </svg>
+  );
+}
+
 export function RefreshIcon(props: IconProps) {
   return (
     <svg {...base(props)}>
@@ -260,3 +268,21 @@ export function EditIcon(props: IconProps) {
     </svg>
   );
 }
+
+export function PlayIcon(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <polygon points="5 3 19 12 5 21 5 3" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
+export function PauseIcon(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <rect x="6" y="4" width="4" height="16" rx="1" fill="currentColor" stroke="none" />
+      <rect x="14" y="4" width="4" height="16" rx="1" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+

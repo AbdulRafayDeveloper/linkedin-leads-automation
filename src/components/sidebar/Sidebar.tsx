@@ -4,13 +4,15 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useState } from 'react';
 import { cn } from '@/lib/utils/cn';
-import { HomeIcon, MenuIcon, PlusCircleIcon, UsersIcon, XIcon } from '@/components/ui/Icons';
+import { HomeIcon, MailIcon, MenuIcon, PlusCircleIcon, UsersIcon, XIcon, CheckCircleIcon, SparklesIcon, EditIcon } from '@/components/ui/Icons';
 
 const NAV_ITEMS = [
-  { href: '/', label: 'Dashboard', icon: HomeIcon },
-  { href: '/process', label: 'Process New Lead', icon: PlusCircleIcon },
   { href: '/lead-ingestion', label: 'Client Ingestion', icon: PlusCircleIcon },
-  { href: '/dashboard', label: 'My Leads', icon: UsersIcon },
+  { href: '/lead-ingestion/emails', label: 'Outreach Drafts', icon: MailIcon },
+  { href: '/lead-ingestion/approved', label: 'Approved Unsent Pool', icon: CheckCircleIcon },
+  { href: '/lead-ingestion/campaigns', label: 'Email Campaigns', icon: SparklesIcon },
+  { href: '/lead-ingestion/prompt', label: 'Global AI Prompt', icon: EditIcon },
+  { href: '/dashboard', label: 'My Ingested Leads', icon: UsersIcon },
 ];
 
 function Brand() {

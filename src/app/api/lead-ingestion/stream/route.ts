@@ -66,7 +66,7 @@ export async function POST(request: NextRequest) {
             jobTitle: 'Professional',
             workPeriod: null,
             websiteUrl: null,
-            roleSummary: '',
+            summary: '',
           };
 
           const lead = await LeadIngestion.create({
@@ -131,12 +131,18 @@ export async function POST(request: NextRequest) {
               jobTitle: c.jobTitle,
               workPeriod: c.workPeriod ?? null,
               websiteUrl: c.websiteUrl ?? null,
-              roleSummary: c.roleSummary ?? '',
+              roleSummary: c.summary ?? '',
             })),
             allRawUrls
           );
 
-          lead.currentCompanies = mapped;
+          lead.currentCompanies = mapped.map((c) => ({
+            companyName: c.companyName,
+            jobTitle: c.jobTitle,
+            workPeriod: c.workPeriod,
+            websiteUrl: c.websiteUrl,
+            summary: c.roleSummary ?? '',
+          }));
           lead.portfolioUrl = portfolioUrl;
           if (mapped[0]?.websiteUrl) lead.websiteUrl = mapped[0].websiteUrl;
           await lead.save();

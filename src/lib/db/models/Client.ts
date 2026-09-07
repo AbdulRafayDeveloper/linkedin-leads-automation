@@ -1,9 +1,10 @@
 import mongoose, { Schema, type Document, type Model } from 'mongoose';
 
 export interface ClientDocument extends Document {
-  baseName: string;    // e.g. "Travis James"
-  name: string;        // e.g. "Travis James #01"
-  serialNumber: number; // 1, 2, 3...
+  baseName: string;        // e.g. "Travis James"
+  name: string;            // e.g. "Travis James #01"
+  serialNumber: number;    // 1, 2, 3...
+  linkedinUrl?: string | null; // e.g. "https://www.linkedin.com/in/travisjames/"
   createdAt: Date;
   updatedAt: Date;
 }
@@ -13,6 +14,7 @@ const ClientSchema = new Schema<ClientDocument>(
     baseName: { type: String, required: true, trim: true },
     name: { type: String, required: true, trim: true },
     serialNumber: { type: Number, required: true, default: 1 },
+    linkedinUrl: { type: String, default: null, trim: true },
   },
   { timestamps: true }
 );

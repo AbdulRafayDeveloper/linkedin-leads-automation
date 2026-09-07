@@ -16,6 +16,10 @@ export interface CurrentCompanyItem {
   workPeriod: string | null;
   websiteUrl: string | null;
   summary: string;
+  companyEmails?: string[];
+  emailSubject?: string | null;
+  emailBody?: string | null;
+  approved?: boolean;
 }
 
 export interface LeadIngestionDocument extends Document {
@@ -43,7 +47,7 @@ export interface LeadIngestionDocument extends Document {
   emailSubject: string | null;
   emailBody: string | null;
   approved: boolean;
-  emailStatus: 'draft' | 'sending' | 'sent' | 'failed';
+  emailStatus: 'pending' | 'in_progress' | 'delivered' | 'opened' | 'failed';
   createdAt: Date;
   updatedAt: Date;
 }
@@ -121,8 +125,8 @@ const LeadIngestionSchema = new Schema<LeadIngestionDocument>(
     approved: { type: Boolean, default: false },
     emailStatus: {
       type: String,
-      enum: ['draft', 'sending', 'sent', 'failed'],
-      default: 'draft',
+      enum: ['pending', 'in_progress', 'delivered', 'opened', 'failed'],
+      default: 'pending',
       index: true,
     },
   },

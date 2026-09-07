@@ -1,6 +1,7 @@
 export interface ClientRecord {
   _id: string;
   name: string;
+  linkedinUrl?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -16,6 +17,10 @@ export interface CurrentCompanyItem {
   workPeriod: string | null;
   websiteUrl: string | null;
   roleSummary: string;
+  companyEmails?: string[];
+  emailSubject?: string | null;
+  emailBody?: string | null;
+  approved?: boolean;
 }
 
 export interface LeadIngestionRecord {
@@ -44,12 +49,12 @@ export interface LeadIngestionRecord {
   emailSubject: string | null;
   emailBody: string | null;
   approved: boolean;
-  emailStatus: 'draft' | 'sending' | 'sent' | 'failed';
+  emailStatus: 'pending' | 'in_progress' | 'delivered' | 'opened' | 'failed';
   createdAt: string;
   updatedAt: string;
 }
 
-const BASE = '/api';
+const BASE = process.env.NEXT_PUBLIC_API_URL || '/api';
 
 async function handle<T>(res: Response): Promise<T> {
   if (!res.ok) {
@@ -103,6 +108,38 @@ export async function refineLeadEmailApi(id: string, prompt: string): Promise<{ 
   }));
 }
 
+export interface CampaignItemRecord {
+  _id: string;
+  leadId: string;
+  companyIndex: number;
+  candidateName: string;
+  clientName: string;
+  companyName: string;
+  recipientEmail: string;
+  subject: string;
+  bodyHtml: string;
+  status: 'pending' | 'sending' | 'delivered' | 'failed' | 'opened';
+  errorMessage?: string | null;
+  sentAt?: string | null;
+  openedAt?: string | null;
+}
+
+export interface CampaignRecord {
+  _id: string;
+  name: string;
+  status: 'draft' | 'running' | 'completed' | 'paused';
+  totalEmails: number;
+  sentCount: number;
+  deliveredCount: number;
+  failedCount: number;
+  openedCount: number;
+  minDelaySeconds: number;
+  maxDelaySeconds: number;
+  items: CampaignItemRecord[];
+  createdAt: string;
+  updatedAt: string;
+}
+
 export async function updateLeadDetailsApi(id: string, updates: Partial<LeadIngestionRecord>): Promise<{ result: LeadIngestionRecord }> {
   return handle(await fetch(`${BASE}/lead-ingestion/${id}`, {
     method: 'PUT',
@@ -111,10 +148,65 @@ export async function updateLeadDetailsApi(id: string, updates: Partial<LeadInge
   }));
 }
 
-export async function bulkSendEmailsApi(clientId: string): Promise<{ message: string; queuedCount: number }> {
-  return handle(await fetch(`${BASE}/lead-ingestion/bulk-send`, {
+export async function getCampaignsApi(params?: { page?: number; limit?: number; search?: string; status?: string }): Promise<{ campaigns: CampaignRecord[]; total: number; page: number; pages: number; hasMore: boolean }> {
+  const q = new URLSearchParams();
+  if (params?.page) q.set('page', params.page.toString());
+  if (params?.limit) q.set('limit', params.limit.toString());
+  if (params?.search) q.set('search', params.search);
+  if (params?.status) q.set('status', params.status);
+  return handle(await fetch(`${BASE}/campaigns?${q.toString()}`, { cache: 'no-store' }));
+}
+
+export async function createCampaignApi(data: {
+  name: string;
+  status?: 'draft' | 'running';
+  minDelaySeconds?: number;
+  maxDelaySeconds?: number;
+  items: Array<{
+    leadId: string;
+    companyIndex: number;
+    candidateName: string;
+    clientName: string;
+    companyName: string;
+    recipientEmail: string;
+    subject: string;
+    bodyHtml: string;
+  }>;
+}): Promise<{ campaign: CampaignRecord }> {
+  return handle(await fetch(`${BASE}/campaigns`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ clientId }),
+    body: JSON.stringify(data),
   }));
 }
+
+export async function getCampaignDetailsApi(id: string): Promise<{ campaign: CampaignRecord }> {
+  return handle(await fetch(`${BASE}/campaigns/${id}`, { cache: 'no-store' }));
+}
+
+export async function updateCampaignApi(id: string, updates: Partial<CampaignRecord>): Promise<{ campaign: CampaignRecord }> {
+  return handle(await fetch(`${BASE}/campaigns/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(updates),
+  }));
+}
+
+export async function deleteCampaignApi(id: string): Promise<{ message: string }> {
+  return handle(await fetch(`${BASE}/campaigns/${id}`, { method: 'DELETE' }));
+}
+
+export async function dispatchCampaignBatchApi(id: string, data?: { itemIds?: string[]; rerunFailed?: boolean }): Promise<{
+  processedCount: number;
+  successCount: number;
+  failedCount: number;
+  remainingCount: number;
+  campaign: CampaignRecord;
+}> {
+  return handle(await fetch(`${BASE}/campaigns/${id}/dispatch-batch`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data ?? {}),
+  }));
+}
+

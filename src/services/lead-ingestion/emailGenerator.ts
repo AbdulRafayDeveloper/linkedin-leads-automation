@@ -1,5 +1,6 @@
 import { connectToMongoDB } from '@/lib/db/connection';
 import { LeadIngestion, type LeadIngestionDocument } from '@/lib/db/models/LeadIngestion';
+import { PromptSetting } from '@/lib/db/models/PromptSetting';
 import { getFallbackChatModels } from '@/lib/ai/provider';
 import { senderProfile, formatSenderSignature, type SenderProfile } from '@/lib/config/senderProfile';
 import mongoose from 'mongoose';
@@ -26,12 +27,10 @@ function ensureStartsWithFirstNameHtml(bodyHtml: string, firstName: string): str
   const trimmed = bodyHtml.trim();
   const lowerTrimmed = trimmed.toLowerCase();
 
-  // If already starts with a paragraph tag enclosing "hi firstName"
   if (/^<p>\s*hi\s+\w+/i.test(lowerTrimmed)) {
     return trimmed;
   }
 
-  // Convert raw signature linebreaks or standard text to HTML paragraphs if not present
   if (!trimmed.startsWith('<p>')) {
     const paragraphs = trimmed
       .split(/\n\n+/)
@@ -60,7 +59,8 @@ export function buildOutreachPrompt(
   summary: string,
   websiteUrl: string | null,
   sender: SenderProfile,
-  userPrompt?: string
+  userPrompt?: string,
+  globalPromptText?: string
 ): string {
   let prompt = `You are ${sender.name}, a ${sender.title}. Context about you: ${sender.positioning.join('; ')}.
 
@@ -80,8 +80,13 @@ Writing rules (follow exactly):
 5. Body: short, clear, conversational. Under 20 seconds to read.
 6. Do NOT include any signature, sign-off, or links in the body; those are added separately.`;
 
-  if (userPrompt && userPrompt.trim()) {
-    prompt += `\n\nSpecial style/type instructions requested by the user: "${userPrompt.trim()}"\nFollow these style instructions strictly when drafting the email.`;
+  const combinedCustomInstruction = [globalPromptText, userPrompt]
+    .filter(Boolean)
+    .join('\n')
+    .trim();
+
+  if (combinedCustomInstruction) {
+    prompt += `\n\nMandatory Style & Pitch Instructions (Apply Strictly):\n"${combinedCustomInstruction}"`;
   }
 
   prompt += `\n\nRespond ONLY with strict JSON in this exact shape:
@@ -107,48 +112,68 @@ export async function generateLeadEmail(
     throw new Error('Lead ingestion record not found');
   }
 
+  // Retrieve persistent global custom prompt setting
+  const promptSetting = await PromptSetting.findOne({ key: 'global_outreach_prompt' });
+  const globalPromptText = promptSetting?.promptText || '';
+
+  const activeSender: SenderProfile = {
+    name: promptSetting?.senderName || sender.name,
+    title: promptSetting?.senderTitle || sender.title,
+    positioning: promptSetting?.senderPositioning
+      ? promptSetting.senderPositioning.split('|').map((s) => s.trim()).filter(Boolean)
+      : sender.positioning,
+    portfolioUrl: promptSetting?.senderPortfolioUrl || sender.portfolioUrl,
+    linkedinUrl: promptSetting?.senderLinkedinUrl || sender.linkedinUrl,
+    phone: promptSetting?.senderPhone || sender.phone,
+  };
+
   const firstName = firstNameOf(doc.fullName || 'there');
-  const summary = doc.summary || 'No details available.';
-  const prompt = buildOutreachPrompt(firstName, summary, doc.websiteUrl, sender, userPrompt);
-
   const candidateModels = models ?? (await getFallbackChatModels()) as unknown as EmailGeneratorModel[];
-  const errors: string[] = [];
 
-  for (const model of candidateModels) {
-    try {
-      const response = await model.invoke(prompt);
-      const rawText = extractContent(response);
-      const jsonMatch = rawText.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) throw new Error('Model did not return JSON');
+  const companies = doc.currentCompanies ?? [];
+  for (let i = 0; i < companies.length; i++) {
+    const comp = companies[i];
+    if (comp.emailSubject && comp.emailBody && !userPrompt) continue;
 
-      const parsed = JSON.parse(jsonMatch[0]) as {
-        subject: string;
-        body: string;
-      };
+    const compSummary = `${doc.summary || ''} | Company: ${comp.companyName} (${comp.jobTitle})`;
+    const prompt = buildOutreachPrompt(firstName, compSummary, comp.websiteUrl, activeSender, userPrompt, globalPromptText);
 
-      if (!parsed.subject || !parsed.body) {
-        throw new Error('Incomplete subject or body');
+    for (const model of candidateModels) {
+      try {
+        const response = await model.invoke(prompt);
+        const rawText = extractContent(response);
+        const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+        if (!jsonMatch) continue;
+
+        const parsed = JSON.parse(jsonMatch[0]) as { subject: string; body: string };
+        if (!parsed.subject || !parsed.body) continue;
+
+        let subject = stripDashes(parsed.subject);
+        if (subject.length > 350) subject = subject.slice(0, 350);
+
+        const cleanBody = ensureStartsWithFirstNameHtml(parsed.body, firstName);
+        const signatureHtml = `<p>${formatSenderSignature(activeSender).replace(/\n/g, '<br />')}</p>`;
+        const fullHtmlBody = `${cleanBody}\n\n${signatureHtml}`;
+
+        comp.emailSubject = subject;
+        comp.emailBody = fullHtmlBody;
+        comp.approved = false;
+
+        if (i === 0) {
+          doc.emailSubject = subject;
+          doc.emailBody = fullHtmlBody;
+          doc.emailStatus = 'pending';
+        }
+
+        break;
+      } catch {
+        // try next model
       }
-
-      let subject = stripDashes(parsed.subject);
-      if (subject.length > 350) subject = subject.slice(0, 350);
-
-      // Append signature to HTML body
-      const cleanBody = ensureStartsWithFirstNameHtml(parsed.body, firstName);
-      const signatureHtml = `<p>${formatSenderSignature(sender).replace(/\n/g, '<br />')}</p>`;
-      const fullHtmlBody = `${cleanBody}\n\n${signatureHtml}`;
-
-      doc.emailSubject = subject;
-      doc.emailBody = fullHtmlBody;
-      doc.emailStatus = 'draft';
-
-      return await doc.save();
-    } catch (error) {
-      errors.push(error instanceof Error ? error.message : 'unknown error');
     }
   }
 
-  throw new Error(`AI email generation failed on all providers: ${errors.join('; ')}`);
+  doc.markModified('currentCompanies');
+  return await doc.save();
 }
 
 export async function refineEmailWithAi(

@@ -62,11 +62,16 @@ async function fetchPageText(targetUrl: string): Promise<string | null> {
       });
       if (!response.ok) continue;
       const contentType = response.headers.get('content-type') || '';
-      if (!contentType.includes('text/html') && !contentType.includes('xml')) {
+      if (
+        !contentType.includes('text/html') &&
+        !contentType.includes('xml') &&
+        !contentType.includes('javascript') &&
+        !contentType.includes('text/plain')
+      ) {
         continue;
       }
       const text = await response.text();
-      if (text && text.trim().length > 50) {
+      if (text && text.trim().length > 20) {
         return text;
       }
     } catch {
@@ -84,7 +89,7 @@ export function extractEmails(html: string): string[] {
     .replace(/<script[\s\S]*?<\/script>/gi, ' ')
     .replace(/<style[\s\S]*?<\/style>/gi, ' ');
 
-  const mailtoMatches = withoutScripts.match(/mailto:([^"'\s?>]+)/gi) || [];
+  const mailtoMatches = html.match(/mailto:([^"'\s?>]+)/gi) || [];
   const textMatches = withoutScripts.match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g) || [];
 
   const candidates = [
@@ -98,9 +103,12 @@ export function extractEmails(html: string): string[] {
     const email = raw.trim().toLowerCase();
     if (seen.has(email)) continue;
     if (/\.(png|jpe?g|gif|svg|webp|ico|css|js)$/i.test(email)) continue;
+    const userPart = email.split('@')[0] || '';
     const domain = email.split('@')[1] || '';
     if (TRACKER_DOMAINS.test(domain)) continue;
-    if (/^[0-9a-f]{16,}$/i.test(email.split('@')[0] || '')) continue;
+    if (domain === 'company.com' || domain === 'domain.com' || domain === 'example.com') continue;
+    if (userPart === 'name' || userPart === 'yourname' || userPart === 'email' || userPart === 'username') continue;
+    if (/^[0-9a-f]{16,}$/i.test(userPart)) continue;
     seen.add(email);
     results.push(email);
   }
@@ -112,43 +120,147 @@ export function extractPhoneNumbers(html: string): string[] {
     .replace(/<script[\s\S]*?<\/script>/gi, ' ')
     .replace(/<style[\s\S]*?<\/style>/gi, ' ');
 
-  const telMatches = withoutScripts.match(/tel:([^"'\s?>]+)/gi) || [];
-  const phoneMatches =
-    withoutScripts.match(/(?:\+?\d{1,3}[-.\s]?)?\(?\d{2,4}\)?[-.\s]?\d{3,4}[-.\s]?\d{3,4}/g) || [];
+  const telMatches = html.match(/tel:([^"'\s?>]+)/gi) || [];
+
+  // Enhanced Phone Regex matching UK (+44, 020, 07...), US (+1, (xxx)...), and International formats
+  const phoneRegexes = [
+    /\+?\d{1,4}[-.\s]?\(?\d{1,5}\)?[-.\s]?\d{2,5}[-.\s]?\d{2,5}[-.\s]?\d{0,4}/g,
+    /\b0[123789]\d{1,4}[-.\s]?\d{3,4}[-.\s]?\d{3,4}\b/g,
+    /\b\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b/g,
+  ];
+
+  const matches: string[] = [];
+  for (const regex of phoneRegexes) {
+    const found = withoutScripts.match(regex) || [];
+    matches.push(...found);
+  }
 
   const candidates = [
     ...telMatches.map((m) => m.replace(/^tel:/i, '')),
-    ...phoneMatches,
+    ...matches,
   ];
 
   const seen = new Set<string>();
   const results: string[] = [];
   for (const raw of candidates) {
-    const cleaned = raw.replace(/[^\d+]/g, '');
-    if (cleaned.length >= 7 && cleaned.length <= 15 && !seen.has(cleaned)) {
-      seen.add(cleaned);
-      results.push(raw.trim());
+    const trimmed = raw.trim();
+    const digitsOnly = trimmed.replace(/[^\d+]/g, '');
+
+    if (/^(19|20)\d{2}$/.test(digitsOnly)) continue;
+    if (digitsOnly.length >= 7 && digitsOnly.length <= 16 && !seen.has(digitsOnly)) {
+      seen.add(digitsOnly);
+      results.push(trimmed);
     }
   }
+
   return results;
 }
 
-function extractLinks(html: string, origin: string): string[] {
-  const hrefMatches = html.match(/href\s*=\s*["']([^"']+)["']/gi) || [];
-  const links = new Set<string>();
-  for (const match of hrefMatches) {
-    const hrefMatch = match.match(/href\s*=\s*["']([^"']+)["']/i);
-    if (!hrefMatch) continue;
-    const href = hrefMatch[1].trim();
-    if (!href || href.startsWith('mailto:') || href.startsWith('tel:') || href.startsWith('#')) {
-      continue;
-    }
-    const normalized = normalizeUrl(href, origin);
+function extractScriptUrls(html: string, origin: string): string[] {
+  const scriptMatches = html.match(/src=["']([^"']+\.js[^"']*)["']/gi) || [];
+  const scripts = new Set<string>();
+  for (const match of scriptMatches) {
+    const srcMatch = match.match(/src=["']([^"']+)["']/i);
+    if (!srcMatch) continue;
+    const src = srcMatch[1].trim();
+    const normalized = normalizeUrl(src, origin);
     if (normalized) {
-      links.add(normalized);
+      scripts.add(normalized);
     }
   }
-  return Array.from(links);
+  return Array.from(scripts);
+}
+
+export interface NavFooterLink {
+  href: string;
+  text: string;
+}
+
+export function extractNavAndFooterLinksWithText(html: string, origin: string): NavFooterLink[] {
+  const results: NavFooterLink[] = [];
+  const seen = new Set<string>();
+
+  const linkRegex = /<a\s+[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+  let match: RegExpExecArray | null;
+  while ((match = linkRegex.exec(html)) !== null) {
+    const rawHref = match[1].trim();
+    const rawText = match[2].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+
+    if (!rawHref || rawHref.startsWith('mailto:') || rawHref.startsWith('tel:') || rawHref.startsWith('#')) {
+      continue;
+    }
+
+    const normalized = normalizeUrl(rawHref, origin);
+    if (normalized && !seen.has(normalized)) {
+      seen.add(normalized);
+      results.push({
+        href: normalized,
+        text: rawText || 'Link',
+      });
+    }
+  }
+
+  const jsRouteRegex = /(?:to|path|href)\s*:\s*["'](\/[a-zA-Z0-9_/-]+)["']/g;
+  while ((match = jsRouteRegex.exec(html)) !== null) {
+    const routePath = match[1].trim();
+    if (routePath === '/' || routePath.startsWith('//')) continue;
+    const normalized = normalizeUrl(routePath, origin);
+    if (normalized && !seen.has(normalized)) {
+      seen.add(normalized);
+      results.push({
+        href: normalized,
+        text: routePath.replace(/^\//, '').replace(/-/g, ' '),
+      });
+    }
+  }
+
+  return results;
+}
+
+export async function findContactPagesWithAi(
+  websiteUrl: string,
+  links: NavFooterLink[]
+): Promise<string[]> {
+  if (links.length === 0) return [];
+
+  try {
+    const linksSummary = links
+      .slice(0, 50)
+      .map((l) => `- Text/Route: "${l.text}" | URL: ${l.href}`)
+      .join('\n');
+
+    const models = await getFallbackChatModels();
+    const prompt = `You are an expert AI web crawler analyzing navigation bar, footer, and router links extracted from a company website:
+
+Website: ${websiteUrl}
+
+Discovered Nav/Footer Routes & Links:
+${linksSummary}
+
+Task: Identify up to 3 URLs that represent Contact Us, Reach Us, About Us, Careers, or Leadership/Team pages where company contact emails & phone numbers are published.
+
+Return ONLY a valid JSON array of string URLs, e.g. ["https://example.com/contact", "https://example.com/about"]. Do not include markdown formatting or backticks.`;
+
+    for (const model of models) {
+      try {
+        const response = await model.invoke(prompt);
+        const text = typeof response === 'string' ? response : JSON.stringify(response);
+        const jsonMatch = text.match(/\[[\s\S]*\]/);
+        if (jsonMatch) {
+          const parsed = JSON.parse(jsonMatch[0]) as string[];
+          if (Array.isArray(parsed)) {
+            return parsed.filter((u) => typeof u === 'string' && u.startsWith('http'));
+          }
+        }
+      } catch {
+        // try next model
+      }
+    }
+  } catch {
+    // fallback
+  }
+
+  return [];
 }
 
 export async function mapDomainsToCompanies(
@@ -169,7 +281,6 @@ export async function mapDomainsToCompanies(
         continue;
       }
 
-      // Check if domain matches company name or initials
       for (const comp of mapped) {
         if (comp.websiteUrl) continue;
         const words = comp.companyName.toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -189,7 +300,6 @@ export async function mapDomainsToCompanies(
     }
   }
 
-  // Fallback: If company 1 still has no URL, assign first non-portfolio url
   if (mapped.length > 0 && !mapped[0].websiteUrl && rawUrls.length > 0) {
     mapped[0].websiteUrl = rawUrls[0];
   }
@@ -245,12 +355,20 @@ ${snippet}`;
 async function parseContactsWithAi(htmlContent: string): Promise<{ emails: string[]; phones: string[] }> {
   try {
     const textSnippet = htmlContent
+      .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+      .replace(/<style[\s\S]*?<\/style>/gi, ' ')
       .replace(/<[^>]+>/g, ' ')
       .replace(/\s+/g, ' ')
-      .slice(0, 4000);
+      .slice(0, 4500);
 
     const models = await getFallbackChatModels();
-    const prompt = `Extract all email addresses and phone numbers from the following website text. Return ONLY a JSON object: {"emails": [], "phones": []}.\n\nWebsite text:\n${textSnippet}`;
+    const prompt = `Extract all contact email addresses and phone numbers (including UK numbers starting with +44 or 0, US numbers, and international numbers) from the website text below.
+
+Return ONLY a JSON object:
+{"emails": ["e1@example.com"], "phones": ["+44 20 7946 0912", "+1 555-123-4567"]}
+
+Website Text:
+${textSnippet}`;
 
     for (const model of models) {
       try {
@@ -260,8 +378,8 @@ async function parseContactsWithAi(htmlContent: string): Promise<{ emails: strin
         if (match) {
           const parsed = JSON.parse(match[0]) as { emails?: string[]; phones?: string[] };
           return {
-            emails: Array.isArray(parsed.emails) ? parsed.emails : [],
-            phones: Array.isArray(parsed.phones) ? parsed.phones : [],
+            emails: Array.isArray(parsed.emails) ? parsed.emails.map((e) => String(e).trim().toLowerCase()) : [],
+            phones: Array.isArray(parsed.phones) ? parsed.phones.map((p) => String(p).trim()) : [],
           };
         }
       } catch {
@@ -294,25 +412,51 @@ export async function findEmailsOnWebsite(
   const visited = new Set<string>();
   let siteType: SiteType = 'unknown';
 
+  let rawPagesHtml = '';
+
   const homepageHtml = await fetchPageText(formattedUrl);
   if (homepageHtml) {
     visited.add(origin + '/');
+    rawPagesHtml += `\n${homepageHtml}`;
+
     extractEmails(homepageHtml).forEach((e) => emails.add(e));
     extractPhoneNumbers(homepageHtml).forEach((p) => phones.add(p));
 
     siteType = await classifyWebsiteWithAi(formattedUrl, homepageHtml);
 
-    const subLinks = extractLinks(homepageHtml, origin);
-    const queue = subLinks.filter((link) => {
-      try {
-        const pathname = new URL(link).pathname.toLowerCase();
-        return HIGH_VALUE_PATHS.some((path) => pathname.startsWith(path));
-      } catch {
-        return false;
-      }
-    });
+    // 1. Crawl Client-side JS script bundles
+    const scriptUrls = extractScriptUrls(homepageHtml, origin);
+    let allScriptContent = '';
 
-    const toCrawl = Array.from(new Set([...queue, ...additionalUrls])).slice(0, 5);
+    await Promise.all(
+      scriptUrls.slice(0, 3).map(async (scriptUrl) => {
+        try {
+          if (visited.has(scriptUrl)) return;
+          visited.add(scriptUrl);
+          const jsContent = await fetchPageText(scriptUrl);
+          if (jsContent) {
+            allScriptContent += `\n${jsContent}`;
+            extractEmails(jsContent).forEach((e) => emails.add(e));
+            extractPhoneNumbers(jsContent).forEach((p) => phones.add(p));
+          }
+        } catch {
+          // ignore
+        }
+      })
+    );
+
+    // 2. Extract Nav & Footer links/routes
+    const htmlNavLinks = extractNavAndFooterLinksWithText(homepageHtml, origin);
+    const jsNavLinks = extractNavAndFooterLinksWithText(allScriptContent, origin);
+    const combinedNavLinks = [...htmlNavLinks, ...jsNavLinks];
+
+    // 3. AI Contact Subpage Path Discoverer
+    const aiDiscoveredContactUrls = await findContactPagesWithAi(formattedUrl, combinedNavLinks);
+    const defaultContactUrls = HIGH_VALUE_PATHS.map((path) => `${origin}${path}`);
+
+    const toCrawl = Array.from(
+      new Set([...aiDiscoveredContactUrls, ...defaultContactUrls, ...additionalUrls])
+    ).slice(0, 8);
 
     await Promise.all(
       toCrawl.map(async (url) => {
@@ -321,17 +465,30 @@ export async function findEmailsOnWebsite(
           visited.add(url);
           const subHtml = await fetchPageText(url);
           if (subHtml) {
+            rawPagesHtml += `\n${subHtml}`;
             extractEmails(subHtml).forEach((e) => emails.add(e));
             extractPhoneNumbers(subHtml).forEach((p) => phones.add(p));
+
+            const subScripts = extractScriptUrls(subHtml, origin);
+            for (const sUrl of subScripts.slice(0, 2)) {
+              if (visited.has(sUrl)) continue;
+              visited.add(sUrl);
+              const js = await fetchPageText(sUrl);
+              if (js) {
+                extractEmails(js).forEach((e) => emails.add(e));
+                extractPhoneNumbers(js).forEach((p) => phones.add(p));
+              }
+            }
           }
         } catch {
-          // ignore subpage errors
+          // ignore
         }
       })
     );
 
-    if (emails.size === 0 || phones.size === 0) {
-      const aiResult = await parseContactsWithAi(homepageHtml);
+    // 4. AI Fallback Extractor: If regex missed phone numbers, pass page HTML text to Gemini AI!
+    if (phones.size === 0 || emails.size === 0) {
+      const aiResult = await parseContactsWithAi(rawPagesHtml || homepageHtml);
       aiResult.emails.forEach((e) => emails.add(e.toLowerCase()));
       aiResult.phones.forEach((p) => phones.add(p));
     }
