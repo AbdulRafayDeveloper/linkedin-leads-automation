@@ -75,15 +75,23 @@ function extractEmail(text: string): string | null {
 }
 
 function extractPhoneNumber(text: string): string | null {
-  // Regex pattern for standard international & domestic phone numbers:
-  // e.g. +1-234-567-8901, +92 300 1234567, (123) 456-7890, etc.
-  const match = text.match(/(?:\+?\d{1,4}[-.\s]?)?\(?\d{1,4}\)?[-.\s]?\d{1,5}[-.\s]?\d{1,5}[-.\s]?\d{1,6}/);
-  if (match) {
-    const cleaned = match[0].trim();
-    // Validate that it looks like a number (at least 7 digits to prevent false matches)
-    const digitsOnly = cleaned.replace(/\D/g, '');
-    if (digitsOnly.length >= 7 && digitsOnly.length <= 15) {
-      return cleaned;
+  const phoneRegexes = [
+    /\+\d{1,3}[-.\s]?\(?\d{1,4}\)?[-.\s]?\d{3,4}[-.\s]?\d{3,4}/g,
+    /\b\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b/g,
+    /\b0[123789]\d{1,4}[-.\s]?\d{3,4}[-.\s]?\d{3,4}\b/g,
+  ];
+
+  for (const regex of phoneRegexes) {
+    const matches = text.match(regex) || [];
+    for (const match of matches) {
+      const cleaned = match.trim();
+      if (/\d+\.\d{2,}/.test(cleaned)) continue;
+      if (/\.\d+/.test(cleaned)) continue;
+      if (/(\d{1,3}\s+){3,}/.test(cleaned)) continue;
+      const digitsOnly = cleaned.replace(/\D/g, '');
+      if (digitsOnly.length >= 10 && digitsOnly.length <= 15) {
+        return cleaned;
+      }
     }
   }
   return null;

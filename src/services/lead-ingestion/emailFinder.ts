@@ -116,22 +116,25 @@ export function extractEmails(html: string): string[] {
 }
 
 export function extractPhoneNumbers(html: string): string[] {
-  const withoutScripts = html
+  const cleanHtml = html
     .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<style[\s\S]*?<\/style>/gi, ' ');
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<svg[\s\S]*?<\/svg>/gi, ' ')
+    .replace(/\bd=["'][^"']*["']/gi, ' ')
+    .replace(/\bviewBox=["'][^"']*["']/gi, ' ')
+    .replace(/<[^>]+>/g, ' ');
 
   const telMatches = html.match(/tel:([^"'\s?>]+)/gi) || [];
 
-  // Enhanced Phone Regex matching UK (+44, 020, 07...), US (+1, (xxx)...), and International formats
   const phoneRegexes = [
-    /\+?\d{1,4}[-.\s]?\(?\d{1,5}\)?[-.\s]?\d{2,5}[-.\s]?\d{2,5}[-.\s]?\d{0,4}/g,
-    /\b0[123789]\d{1,4}[-.\s]?\d{3,4}[-.\s]?\d{3,4}\b/g,
+    /\+\d{1,3}[-.\s]?\(?\d{1,4}\)?[-.\s]?\d{3,4}[-.\s]?\d{3,4}/g,
     /\b\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b/g,
+    /\b0[123789]\d{1,4}[-.\s]?\d{3,4}[-.\s]?\d{3,4}\b/g,
   ];
 
   const matches: string[] = [];
   for (const regex of phoneRegexes) {
-    const found = withoutScripts.match(regex) || [];
+    const found = cleanHtml.match(regex) || [];
     matches.push(...found);
   }
 
@@ -144,10 +147,20 @@ export function extractPhoneNumbers(html: string): string[] {
   const results: string[] = [];
   for (const raw of candidates) {
     const trimmed = raw.trim();
-    const digitsOnly = trimmed.replace(/[^\d+]/g, '');
 
+    // Reject floats/decimals (e.g. 58.7519519, 189.192525, 254.1469)
+    if (/\d+\.\d{2,}/.test(trimmed)) continue;
+    if (/\.\d+/.test(trimmed)) continue;
+    // Reject space-separated coordinate sequences (e.g. 0 0 103 24)
+    if (/(\d{1,3}\s+){3,}/.test(trimmed)) continue;
+
+    const digitsOnly = trimmed.replace(/[^\d+]/g, '');
     if (/^(19|20)\d{2}$/.test(digitsOnly)) continue;
-    if (digitsOnly.length >= 7 && digitsOnly.length <= 16 && !seen.has(digitsOnly)) {
+
+    const plainDigits = digitsOnly.replace(/^\+/, '');
+    if (plainDigits.length < 10 || plainDigits.length > 15) continue;
+
+    if (!seen.has(digitsOnly)) {
       seen.add(digitsOnly);
       results.push(trimmed);
     }
