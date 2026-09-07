@@ -92,11 +92,15 @@ export async function crawlLeadWebsiteApi(
   }));
 }
 
-export async function generateLeadEmailApi(id: string, promptStyle?: string): Promise<{ result: LeadIngestionRecord }> {
+export async function generateLeadEmailApi(
+  id: string,
+  userPrompt?: string,
+  companyIndex?: number
+): Promise<{ result: LeadIngestionRecord }> {
   return handle(await fetch(`${BASE}/lead-ingestion/${id}/generate-email`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ promptStyle }),
+    body: JSON.stringify({ userPrompt, companyIndex, forceRegenerate: true }),
   }));
 }
 
@@ -140,7 +144,10 @@ export interface CampaignRecord {
   updatedAt: string;
 }
 
-export async function updateLeadDetailsApi(id: string, updates: Partial<LeadIngestionRecord>): Promise<{ result: LeadIngestionRecord }> {
+export async function updateLeadDetailsApi(
+  id: string,
+  updates: Partial<LeadIngestionRecord> & { addManualEmail?: string; forceVerifyEmail?: string }
+): Promise<{ result: LeadIngestionRecord }> {
   return handle(await fetch(`${BASE}/lead-ingestion/${id}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },

@@ -5,6 +5,7 @@ import Link from 'next/link';
 import {
   crawlLeadWebsiteApi,
   generateLeadEmailApi,
+  refineLeadEmailApi,
   updateLeadDetailsApi,
   type LeadIngestionRecord,
   type VerifiedEmailItem,
@@ -24,6 +25,7 @@ import {
   GlobeIcon,
   EditIcon,
   ArrowLeftIcon,
+  XIcon,
 } from '@/components/ui/Icons';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -116,7 +118,7 @@ function getCategorizedEmails(
   return { companyEmailMap, personalEmails };
 }
 
-// ── Components ────────────────────────────────────────────────────────────────
+// ── Badges & Step Indicators ──────────────────────────────────────────────────
 
 function SmtpBadge({ status }: { status: VerifiedEmailItem['status'] }) {
   if (status === 'valid') return <Badge tone="success">Verified SMTP</Badge>;
@@ -180,6 +182,7 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
   const [loading, setLoading] = useState(true);
   const [pageError, setPageError] = useState<string | null>(null);
 
+  // URL State Management
   const [editingWebIndex, setEditingWebIndex] = useState<number | null>(null);
   const [customWebInput, setCustomWebInput] = useState('');
   const [crawlingCompIndex, setCrawlingCompIndex] = useState<number | null>(null);
@@ -187,6 +190,9 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
   const [editingPersonalWeb, setEditingPersonalWeb] = useState(false);
   const [customPersonalWebInput, setCustomPersonalWebInput] = useState('');
   const [crawlingPersonalWeb, setCrawlingPersonalWeb] = useState(false);
+
+  // Single-Email SMTP Verification State
+  const [verifyingEmailMap, setVerifyingEmailMap] = useState<Record<string, boolean>>({});
 
   // Email Editors (Comma-Separated String state)
   const [editingCompanyEmailIndex, setEditingCompanyEmailIndex] = useState<number | null>(null);
@@ -197,11 +203,17 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
   const [personalEmailsInput, setPersonalEmailsInput] = useState('');
   const [savingPersonalEmails, setSavingPersonalEmails] = useState(false);
 
+  // Draft Editor Modal State
   const [editingDraftIndex, setEditingDraftIndex] = useState<number | null>(null);
   const [draftSubjectInput, setDraftSubjectInput] = useState('');
   const [draftBodyInput, setDraftBodyInput] = useState('');
   const [savingDraftIndex, setSavingDraftIndex] = useState<number | null>(null);
-  const [generating, setGenerating] = useState(false);
+  const [regeneratingCompIndex, setRegeneratingCompIndex] = useState<number | null>(null);
+  
+  // Modal Mode & AI Prompt
+  const [editorTab, setEditorTab] = useState<'visual' | 'code'>('visual');
+  const [aiRewritePrompt, setAiRewritePrompt] = useState('');
+  const [rewritingAi, setRewritingAi] = useState(false);
 
   async function callPhase(
     phase: 'extract' | 'map' | 'crawl' | 'verify',
@@ -231,6 +243,7 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
 
         if (fetchedLead && isMounted) {
           setLead(fetchedLead);
+          setCustomPersonalWebInput(fetchedLead.portfolioUrl || '');
 
           if (!fetchedLead.emailSubject && fetchedLead.status !== 'completed') {
             void runAutoPipeline(fetchedLead._id);
@@ -329,6 +342,73 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
     }
   };
 
+  // ── On-Demand Single Email Socket SMTP Verification Handler ─────────────────────
+  const handleVerifySingleEmail = async (emailToVerify: string) => {
+    if (!id || !emailToVerify) return;
+    setVerifyingEmailMap((prev) => ({ ...prev, [emailToVerify]: true }));
+    setPageError(null);
+    try {
+      const res = await updateLeadDetailsApi(id, { forceVerifyEmail: emailToVerify });
+      setLead(res.result);
+    } catch (e) {
+      setPageError(e instanceof Error ? e.message : `Failed to verify SMTP for ${emailToVerify}`);
+    } finally {
+      setVerifyingEmailMap((prev) => ({ ...prev, [emailToVerify]: false }));
+    }
+  };
+
+  // ── Email Remapping Handler Across Containers ───────────────────────────────
+  const handleRemapEmail = async (
+    email: string,
+    fromContainer: 'personal' | number,
+    toContainer: 'personal' | number
+  ) => {
+    if (!id) return;
+    setPageError(null);
+    try {
+      const targetEmail = email.toLowerCase().trim();
+      const updatedCompanies = companies.map((c) => ({
+        ...c,
+        companyEmails: [...(c.companyEmails ?? [])],
+      }));
+
+      let updatedDiscovered = [...(lead?.discoveredEmails ?? [])];
+
+      // Remove from source container
+      if (fromContainer === 'personal') {
+        updatedDiscovered = updatedDiscovered.filter((e) => e.toLowerCase() !== targetEmail);
+      } else {
+        const comp = updatedCompanies[fromContainer];
+        if (comp) {
+          comp.companyEmails = (comp.companyEmails ?? []).filter((e) => e.toLowerCase() !== targetEmail);
+        }
+      }
+
+      // Add to target container
+      if (toContainer === 'personal') {
+        if (!updatedDiscovered.some((e) => e.toLowerCase() === targetEmail)) {
+          updatedDiscovered.push(targetEmail);
+        }
+      } else {
+        const comp = updatedCompanies[toContainer];
+        if (comp) {
+          const existing = comp.companyEmails ?? [];
+          if (!existing.some((e) => e.toLowerCase() === targetEmail)) {
+            comp.companyEmails = [...existing, targetEmail];
+          }
+        }
+      }
+
+      const res = await updateLeadDetailsApi(id, {
+        currentCompanies: updatedCompanies,
+        discoveredEmails: updatedDiscovered,
+      });
+      setLead(res.result);
+    } catch (e) {
+      setPageError(e instanceof Error ? e.message : 'Failed to remap email address');
+    }
+  };
+
   const handleCompanyCrawl = async (companyIndex: number, newUrl: string) => {
     if (!newUrl.trim() || !id) return;
     setCrawlingCompIndex(companyIndex);
@@ -365,7 +445,6 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
       const crawlRes = await crawlLeadWebsiteApi(id, newUrl.trim());
       setLead(crawlRes.result);
       setEditingPersonalWeb(false);
-      setCustomPersonalWebInput('');
     } catch (e) {
       setPageError(e instanceof Error ? e.message : 'Failed to crawl personal website');
     } finally {
@@ -373,7 +452,7 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
     }
   };
 
-  // Save edited company emails (Validates duplicates across other boxes!)
+  // Save edited company emails & trigger instant SMTP verification
   const handleSaveCompanyEmails = async (companyIndex: number) => {
     if (!id) return;
     setSavingCompanyEmails(true);
@@ -384,7 +463,6 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
         .map((e) => e.trim().toLowerCase())
         .filter((e) => e.includes('@'));
 
-      // Check for duplicate emails existing in OTHER company sub-boxes or personal profile
       const otherBoxesEmails = new Set<string>();
       companies.forEach((comp, idx) => {
         if (idx !== companyIndex) {
@@ -395,7 +473,7 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
 
       const duplicates = parsedEmails.filter((e) => otherBoxesEmails.has(e));
       if (duplicates.length > 0) {
-        setPageError(`Email "${duplicates.join(', ')}" already exists in another sub-box! Duplicate emails across boxes are not allowed.`);
+        setPageError(`Email "${duplicates.join(', ')}" already exists in another sub-box!`);
         setSavingCompanyEmails(false);
         return;
       }
@@ -408,6 +486,7 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
 
       const res = await updateLeadDetailsApi(id, {
         currentCompanies: updatedCompanies,
+        ...(parsedEmails.length > 0 ? { addManualEmail: parsedEmails.join(',') } : {}),
       });
       setLead(res.result);
       setEditingCompanyEmailIndex(null);
@@ -418,7 +497,7 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
     }
   };
 
-  // Save edited personal emails (Validates duplicates across company boxes!)
+  // Save edited personal emails & trigger instant SMTP verification
   const handleSavePersonalEmails = async () => {
     if (!id) return;
     setSavingPersonalEmails(true);
@@ -429,7 +508,6 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
         .map((e) => e.trim().toLowerCase())
         .filter((e) => e.includes('@'));
 
-      // Check for duplicate emails existing in company boxes
       const companyEmailsSet = new Set<string>();
       companies.forEach((comp) => {
         (comp.companyEmails ?? []).forEach((e) => companyEmailsSet.add(e.toLowerCase()));
@@ -437,13 +515,14 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
 
       const duplicates = parsedEmails.filter((e) => companyEmailsSet.has(e));
       if (duplicates.length > 0) {
-        setPageError(`Email "${duplicates.join(', ')}" is already assigned to a Company sub-box! Duplicate emails across boxes are not allowed.`);
+        setPageError(`Email "${duplicates.join(', ')}" is already assigned to a Company sub-box!`);
         setSavingPersonalEmails(false);
         return;
       }
 
       const res = await updateLeadDetailsApi(id, {
         discoveredEmails: Array.from(new Set(parsedEmails)),
+        ...(parsedEmails.length > 0 ? { addManualEmail: parsedEmails.join(',') } : {}),
       });
       setLead(res.result);
       setEditingPersonalEmails(false);
@@ -484,7 +563,8 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
     }
   };
 
-  const handleSaveCompanyDraftEmail = async (companyIndex: number) => {
+  // Save company draft subject & body from modal
+  const handleSaveCompanyDraftEmail = async (companyIndex: number, markApproved: boolean = false) => {
     if (!id) return;
     setSavingDraftIndex(companyIndex);
     try {
@@ -493,12 +573,14 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
         ...updatedCompanies[companyIndex],
         emailSubject: draftSubjectInput,
         emailBody: draftBodyInput,
+        ...(markApproved ? { approved: true } : {}),
       };
 
       const res = await updateLeadDetailsApi(id, {
         currentCompanies: updatedCompanies,
         emailSubject: updatedCompanies[0]?.emailSubject ?? lead?.emailSubject,
         emailBody: updatedCompanies[0]?.emailBody ?? lead?.emailBody,
+        approved: updatedCompanies[0]?.approved ?? lead?.approved,
       });
       setLead(res.result);
       setEditingDraftIndex(null);
@@ -509,16 +591,39 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
     }
   };
 
-  const handleRegenerateAllEmails = async () => {
+  // Per-Company AI Draft Regeneration
+  const handleRegenerateCompanyDraft = async (companyIndex: number) => {
     if (!id) return;
-    setGenerating(true);
+    setRegeneratingCompIndex(companyIndex);
+    setPageError(null);
     try {
-      const res = await generateLeadEmailApi(id);
+      const res = await generateLeadEmailApi(id, undefined, companyIndex);
       setLead(res.result);
     } catch (e) {
-      setPageError(e instanceof Error ? e.message : 'Failed to generate email');
+      setPageError(e instanceof Error ? e.message : 'Failed to regenerate email draft');
     } finally {
-      setGenerating(false);
+      setRegeneratingCompIndex(null);
+    }
+  };
+
+  // Refine Draft with AI Prompt from Modal
+  const handleAiRefineDraft = async (companyIndex: number) => {
+    if (!id || !aiRewritePrompt.trim()) return;
+    setRewritingAi(true);
+    setPageError(null);
+    try {
+      const res = await generateLeadEmailApi(id, aiRewritePrompt.trim(), companyIndex);
+      setLead(res.result);
+      const updatedComp = res.result.currentCompanies?.[companyIndex];
+      if (updatedComp) {
+        setDraftSubjectInput(updatedComp.emailSubject || draftSubjectInput);
+        setDraftBodyInput(updatedComp.emailBody || draftBodyInput);
+      }
+      setAiRewritePrompt('');
+    } catch (e) {
+      setPageError(e instanceof Error ? e.message : 'Failed to refine draft with AI');
+    } finally {
+      setRewritingAi(false);
     }
   };
 
@@ -586,8 +691,6 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
             description="Candidate Profile & Lead Intelligence Workspace"
           />
         </div>
-
-
       </div>
 
       {pageError && (
@@ -637,7 +740,7 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
                 </div>
               </div>
 
-              {/* Personal Portfolio URL Controls */}
+              {/* Personal Portfolio URL Controls (Typing & Focus Bug Fix) */}
               <div className="flex items-center gap-2 shrink-0">
                 {crawlingPersonalWeb ? (
                   <div className="flex items-center gap-2 bg-blue-50 border border-blue-200 px-3 py-1.5 rounded-md text-blue-700 text-xs font-semibold animate-pulse shadow-2xs">
@@ -678,8 +781,12 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
                         <input
                           type="url"
                           placeholder="Enter personal portfolio URL..."
-                          value={editingPersonalWeb ? customPersonalWebInput : portfolioUrl || ''}
-                          onChange={(e) => setCustomPersonalWebInput(e.target.value)}
+                          value={customPersonalWebInput}
+                          onFocus={() => setEditingPersonalWeb(true)}
+                          onChange={(e) => {
+                            setEditingPersonalWeb(true);
+                            setCustomPersonalWebInput(e.target.value);
+                          }}
                           disabled={isAnyCrawlActive}
                           className="text-xs border border-blue-200 rounded px-2.5 py-1 focus:ring-1 focus:ring-blue-500 focus:outline-none w-64 bg-white disabled:opacity-50"
                         />
@@ -709,7 +816,7 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
               </div>
             </div>
 
-            {/* Personal Emails & Strictly Deduplicated List */}
+            {/* Personal Emails with SMTP Re-verify & Remap Dropdown */}
             <div>
               <div className="flex items-center justify-between mb-1.5">
                 <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Personal Emails</span>
@@ -765,22 +872,56 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
                   {personalEmails.length === 0 ? (
                     <div className="text-slate-400 italic text-[11px]">No unique personal email address mapped yet. Click Edit Personal Email(s) above.</div>
                   ) : (
-                    <ul className="space-y-1">
+                    <ul className="space-y-1.5">
                       {personalEmails.map((em: string) => {
                         const status = verifiedMap.get(em);
-                        const isVerifyingThisEmail = isGlobalVerifyRunning || (savingPersonalEmails && personalEmailsInput.includes(em));
+                        const isVerifyingThis = verifyingEmailMap[em] || isGlobalVerifyRunning;
 
                         return (
-                          <li key={em} className="flex items-center justify-between bg-white border border-slate-200 rounded-md px-2.5 py-1.5 gap-2">
-                            <span className="text-[11px] font-semibold text-slate-800 truncate font-mono">{em}</span>
-                            {isVerifyingThisEmail && !status ? (
-                              <span className="flex items-center gap-1 text-[10px] font-semibold text-blue-700 bg-blue-50 border border-blue-200 px-2 py-0.5 rounded animate-pulse">
-                                <LoaderIcon width={10} height={10} className="animate-spin text-blue-600" />
-                                Verifying email...
-                              </span>
-                            ) : (
+                          <li key={em} className="flex flex-wrap items-center justify-between bg-white border border-slate-200 rounded-md px-3 py-1.5 gap-2">
+                            <span className="text-xs font-bold text-slate-900 font-mono shrink-0">{em}</span>
+
+                            <div className="flex items-center gap-2 ml-auto">
                               <SmtpBadge status={status ?? 'pending'} />
-                            )}
+
+                              {/* Single Email SMTP Re-verify Button */}
+                              <button
+                                type="button"
+                                disabled={isVerifyingThis}
+                                onClick={() => { void handleVerifySingleEmail(em); }}
+                                className="flex items-center gap-1 text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded hover:bg-amber-100 transition-colors disabled:opacity-50"
+                                title="Re-run real socket SMTP verification on this email"
+                              >
+                                {isVerifyingThis ? (
+                                  <>
+                                    <LoaderIcon width={10} height={10} className="animate-spin text-amber-600" />
+                                    Verifying...
+                                  </>
+                                ) : (
+                                  <>⚡ Verify SMTP</>
+                                )}
+                              </button>
+
+                              {/* Email Remapping Dropdown */}
+                              <select
+                                value="personal"
+                                onChange={(e) => {
+                                  const val = e.target.value;
+                                  if (val.startsWith('company-')) {
+                                    const targetIdx = parseInt(val.replace('company-', ''), 10);
+                                    void handleRemapEmail(em, 'personal', targetIdx);
+                                  }
+                                }}
+                                className="text-[10px] border border-slate-200 rounded px-1.5 py-0.5 bg-slate-50 text-slate-700 font-semibold focus:outline-none cursor-pointer hover:bg-slate-100"
+                              >
+                                <option value="personal">👤 Personal Profile</option>
+                                {companies.map((c, idx) => (
+                                  <option key={idx} value={`company-${idx}`}>
+                                    🏢 Move to {c.companyName || `Company #${idx + 1}`}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
                           </li>
                         );
                       })}
@@ -793,7 +934,7 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
             {personalPhones.length > 0 && (
               <div className="flex flex-wrap gap-1.5 pt-1 border-t border-blue-100/60">
                 {personalPhones.map((p) => (
-                  <span key={p} className="bg-white border border-slate-200 text-slate-800 px-2.5 py-1 rounded-md font-mono text-[11px]">📞 {p}</span>
+                  <span key={p} className="bg-white border border-slate-200 text-slate-800 px-2.5 py-1 rounded-md font-mono text-[11px] font-medium">📞 {p}</span>
                 ))}
               </div>
             )}
@@ -805,8 +946,6 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
               const isCrawlingThis = (crawlingCompIndex === i) || (isGlobalCrawlRunning && Boolean(c.websiteUrl));
               const isEditingThis = editingWebIndex === i;
               const isEditingCompanyEmailsThis = editingCompanyEmailIndex === i;
-              const isEditingDraftThis = editingDraftIndex === i;
-              const isSavingDraftThis = savingDraftIndex === i;
 
               const compEmails = companyEmailMap.get(i) ?? [];
               const draftSubject = c.emailSubject || (i === 0 ? lead?.emailSubject : null);
@@ -824,7 +963,7 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
                       </div>
                     </div>
 
-                    {/* Company Website URL Controls */}
+                    {/* Company Website URL Controls (Typing Bug Fix) */}
                     <div className="flex items-center gap-2 shrink-0">
                       {isCrawlingThis ? (
                         <div className="flex items-center gap-2 bg-indigo-50 border border-indigo-200 px-3 py-1.5 rounded-md text-indigo-700 text-xs font-semibold animate-pulse shadow-2xs">
@@ -867,7 +1006,14 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
                                 type="url"
                                 placeholder="Enter company website URL..."
                                 value={isEditingThis ? customWebInput : c.websiteUrl || ''}
-                                onChange={(e) => setCustomWebInput(e.target.value)}
+                                onFocus={() => {
+                                  setEditingWebIndex(i);
+                                  if (!isEditingThis) setCustomWebInput(c.websiteUrl || '');
+                                }}
+                                onChange={(e) => {
+                                  setEditingWebIndex(i);
+                                  setCustomWebInput(e.target.value);
+                                }}
                                 disabled={isAnyCrawlActive}
                                 className="text-xs border border-purple-200 rounded px-2.5 py-1 focus:ring-1 focus:ring-indigo-500 focus:outline-none w-64 bg-white disabled:opacity-50"
                               />
@@ -897,7 +1043,7 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
                     </div>
                   </div>
 
-                  {/* Company Contact Emails (Strictly Unique) */}
+                  {/* Company Contact Emails with SMTP Re-verify & Remap Dropdown */}
                   <div>
                     <div className="flex items-center justify-between mb-1.5">
                       <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Contact Emails</span>
@@ -924,7 +1070,7 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
                         <div className="flex items-center gap-1.5">
                           <input
                             type="text"
-                            placeholder="e.g. tjames@prometheusags.ai, contact@prometheusags.ai"
+                            placeholder="e.g. contact@company.com"
                             value={companyEmailsInput}
                             onChange={(e) => setCompanyEmailsInput(e.target.value)}
                             disabled={isAnyCrawlActive}
@@ -957,22 +1103,60 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
                               : 'No contact emails for this company. Click Edit Emails above.'}
                           </div>
                         ) : (
-                          <ul className="space-y-1">
+                          <ul className="space-y-1.5">
                             {compEmails.map((em: string) => {
                               const status = verifiedMap.get(em);
-                              const isVerifyingThisEmail = isGlobalVerifyRunning || (savingCompanyEmails && companyEmailsInput.includes(em));
+                              const isVerifyingThis = verifyingEmailMap[em] || isGlobalVerifyRunning;
 
                               return (
-                                <li key={em} className="flex items-center justify-between bg-white border border-slate-200 rounded-md px-2.5 py-1.5 gap-2">
-                                  <span className="text-[11px] font-semibold text-slate-800 truncate font-mono">{em}</span>
-                                  {isVerifyingThisEmail && !status ? (
-                                    <span className="flex items-center gap-1 text-[10px] font-semibold text-indigo-700 bg-indigo-50 border border-indigo-200 px-2 py-0.5 rounded animate-pulse">
-                                      <LoaderIcon width={10} height={10} className="animate-spin text-indigo-600" />
-                                      Verifying email...
-                                    </span>
-                                  ) : (
+                                <li key={em} className="flex flex-wrap items-center justify-between bg-white border border-slate-200 rounded-md px-3 py-1.5 gap-2">
+                                  <span className="text-xs font-bold text-slate-900 font-mono shrink-0">{em}</span>
+
+                                  <div className="flex items-center gap-2 ml-auto">
                                     <SmtpBadge status={status ?? 'pending'} />
-                                  )}
+
+                                    {/* Single Email SMTP Re-verify Button */}
+                                    <button
+                                      type="button"
+                                      disabled={isVerifyingThis}
+                                      onClick={() => { void handleVerifySingleEmail(em); }}
+                                      className="flex items-center gap-1 text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded hover:bg-amber-100 transition-colors disabled:opacity-50"
+                                      title="Re-run real socket SMTP verification on this email"
+                                    >
+                                      {isVerifyingThis ? (
+                                        <>
+                                          <LoaderIcon width={10} height={10} className="animate-spin text-amber-600" />
+                                          Verifying...
+                                        </>
+                                      ) : (
+                                        <>⚡ Verify SMTP</>
+                                      )}
+                                    </button>
+
+                                    {/* Email Remapping Dropdown */}
+                                    <select
+                                      value={`company-${i}`}
+                                      onChange={(e) => {
+                                        const val = e.target.value;
+                                        if (val === 'personal') {
+                                          void handleRemapEmail(em, i, 'personal');
+                                        } else if (val.startsWith('company-')) {
+                                          const targetIdx = parseInt(val.replace('company-', ''), 10);
+                                          if (targetIdx !== i) {
+                                            void handleRemapEmail(em, i, targetIdx);
+                                          }
+                                        }
+                                      }}
+                                      className="text-[10px] border border-slate-200 rounded px-1.5 py-0.5 bg-slate-50 text-slate-700 font-semibold focus:outline-none cursor-pointer hover:bg-slate-100"
+                                    >
+                                      <option value="personal">👤 Move to Personal</option>
+                                      {companies.map((compObj, idx) => (
+                                        <option key={idx} value={`company-${idx}`}>
+                                          🏢 {idx === i ? `Assigned to ${compObj.companyName}` : `Move to ${compObj.companyName}`}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </div>
                                 </li>
                               );
                             })}
@@ -982,105 +1166,273 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
                     )}
                   </div>
 
-                  {/* IN-BOX AI OUTREACH DRAFT EMAIL & INTERACTIVE APPROVAL */}
-                  {draftSubject && draftBody && (
-                    <div className="border border-indigo-200 bg-white rounded-md p-3.5 space-y-2 mt-3">
-                      <div className="flex items-center justify-between border-b border-slate-100 pb-2">
-                        <span className="text-xs font-extrabold text-indigo-950 flex items-center gap-1.5">
-                          <SparklesIcon width={13} height={13} className="text-indigo-500" />
-                          AI Outreach Draft Email
-                        </span>
+                  {/* IN-BOX AI OUTREACH DRAFT EMAIL & PER-COMPANY REGENERATE */}
+                  <div className="border border-indigo-200 bg-white rounded-md p-3.5 space-y-2 mt-3 shadow-2xs">
+                    <div className="flex flex-wrap items-center justify-between border-b border-slate-100 pb-2 gap-2">
+                      <span className="text-xs font-extrabold text-indigo-950 flex items-center gap-1.5">
+                        <SparklesIcon width={13} height={13} className="text-indigo-500" />
+                        AI Outreach Draft Email
+                      </span>
 
-                        <div className="flex items-center gap-2">
-                          <Button
-                            size="sm"
-                            variant={isApproved ? 'primary' : 'outline'}
-                            onClick={() => { void handleToggleApproveDraft(i); }}
-                            className={[
-                              'text-[10px] px-2.5 py-0.5 font-bold transition-all',
-                              isApproved
-                                ? 'bg-green-600 hover:bg-green-700 text-white border-green-600'
-                                : 'border-slate-300 text-slate-600 hover:bg-slate-50',
-                            ].join(' ')}
-                          >
-                            {isApproved ? '✓ Approved' : 'Approve Draft'}
-                          </Button>
-
-                          {!isEditingDraftThis && (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setEditingDraftIndex(i);
-                                setDraftSubjectInput(draftSubject);
-                                setDraftBodyInput(draftBody);
-                              }}
-                              className="text-slate-400 hover:text-indigo-600 p-1 rounded"
-                              title="Edit Draft Email"
-                            >
-                              <EditIcon width={13} height={13} />
-                            </button>
+                      <div className="flex items-center gap-2">
+                        {/* Per-Company Draft Regenerate Button */}
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={regeneratingCompIndex === i || isAnyCrawlActive}
+                          onClick={() => { void handleRegenerateCompanyDraft(i); }}
+                          className="text-[10px] px-2.5 py-0.5 border-purple-200 text-purple-700 hover:bg-purple-50 flex items-center gap-1 font-semibold disabled:opacity-40"
+                        >
+                          {regeneratingCompIndex === i ? (
+                            <>
+                              <LoaderIcon width={11} height={11} className="animate-spin text-purple-600" />
+                              Generating Draft...
+                            </>
+                          ) : (
+                            <>
+                              <SparklesIcon width={11} height={11} className="text-purple-600" />
+                              ✨ Regenerate Draft
+                            </>
                           )}
-                        </div>
-                      </div>
+                        </Button>
 
-                      {isEditingDraftThis ? (
-                        <div className="space-y-2 pt-1">
-                          <div>
-                            <label className="text-[10px] font-bold text-slate-400 uppercase">Subject Line</label>
-                            <input
-                              type="text"
-                              value={draftSubjectInput}
-                              onChange={(e) => setDraftSubjectInput(e.target.value)}
-                              className="w-full text-xs font-bold border border-slate-300 rounded px-2.5 py-1.5 focus:ring-1 focus:ring-indigo-500 focus:outline-none"
-                            />
-                          </div>
-                          <div>
-                            <label className="text-[10px] font-bold text-slate-400 uppercase">Email Body (HTML)</label>
-                            <textarea
-                              rows={6}
-                              value={draftBodyInput}
-                              onChange={(e) => setDraftBodyInput(e.target.value)}
-                              className="w-full text-xs font-mono border border-slate-300 rounded p-2.5 focus:ring-1 focus:ring-indigo-500 focus:outline-none bg-slate-50"
-                            />
-                          </div>
-                          <div className="flex justify-end gap-2 pt-1">
-                            <button
-                              type="button"
-                              onClick={() => setEditingDraftIndex(null)}
-                              className="text-xs text-slate-500 hover:text-slate-700 px-2 py-1"
-                            >
-                              Cancel
-                            </button>
-                            <Button
-                              size="sm"
-                              onClick={() => { void handleSaveCompanyDraftEmail(i); }}
-                              disabled={isSavingDraftThis}
-                              className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs px-3 py-1 font-semibold flex items-center gap-1"
-                            >
-                              {isSavingDraftThis ? <LoaderIcon width={11} height={11} className="animate-spin" /> : <CheckCircleIcon width={11} height={11} />}
-                              Save Draft Changes
-                            </Button>
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="space-y-1.5 pt-1">
-                          <div className="text-xs font-bold text-slate-900 border-b border-slate-100 pb-1">
-                            Subject: <span className="font-semibold text-slate-700">{draftSubject}</span>
-                          </div>
-                          <div
-                            className="text-xs text-slate-700 leading-relaxed font-sans prose prose-slate max-w-none pt-1"
-                            dangerouslySetInnerHTML={{ __html: draftBody }}
-                          />
-                        </div>
-                      )}
+                        <Button
+                          size="sm"
+                          variant={isApproved ? 'primary' : 'outline'}
+                          onClick={() => { void handleToggleApproveDraft(i); }}
+                          className={[
+                            'text-[10px] px-2.5 py-0.5 font-bold transition-all',
+                            isApproved
+                              ? 'bg-green-600 hover:bg-green-700 text-white border-green-600'
+                              : 'border-slate-300 text-slate-600 hover:bg-slate-50',
+                          ].join(' ')}
+                        >
+                          {isApproved ? '✓ Approved' : 'Approve Draft'}
+                        </Button>
+
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => {
+                            setEditingDraftIndex(i);
+                            setDraftSubjectInput(draftSubject || '');
+                            setDraftBodyInput(draftBody || '');
+                          }}
+                          className="text-[10px] px-2 py-0.5 border-indigo-200 text-indigo-700 hover:bg-indigo-50 flex items-center gap-1 font-semibold"
+                        >
+                          <EditIcon width={11} height={11} />
+                          Preview & Edit
+                        </Button>
+                      </div>
                     </div>
-                  )}
+
+                    {/* Formatted HTML Display (No raw HTML tags) */}
+                    {draftSubject && draftBody ? (
+                      <div className="space-y-2 pt-1">
+                        <div className="text-xs font-bold text-slate-900 border-b border-slate-100 pb-1.5 flex items-center justify-between">
+                          <span>Subject: <span className="font-semibold text-slate-800">{draftSubject}</span></span>
+                        </div>
+                        <div
+                          className="text-xs text-slate-700 leading-relaxed font-sans prose prose-slate max-w-none pt-1"
+                          dangerouslySetInnerHTML={{ __html: draftBody }}
+                        />
+                      </div>
+                    ) : (
+                      <div className="text-xs text-slate-400 italic py-2 text-center">
+                        No AI draft generated for this company yet. Click &quot;✨ Regenerate Draft&quot; above to generate one.
+                      </div>
+                    )}
+                  </div>
                 </div>
               );
             })}
           </div>
         </CardContent>
       </Card>
+
+      {/* ── RICH DRAFT REWRITE & PREVIEW MODAL WINDOW ───────────────────────── */}
+      {editingDraftIndex !== null && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in">
+          <div className="bg-white rounded-xl shadow-2xl border border-slate-200 w-full max-w-3xl overflow-hidden flex flex-col max-h-[90vh]">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 bg-slate-50">
+              <div className="flex items-center gap-2">
+                <SparklesIcon width={18} height={18} className="text-indigo-600" />
+                <h3 className="text-base font-extrabold text-slate-900">
+                  Outreach Email Draft — {companies[editingDraftIndex]?.companyName}
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditingDraftIndex(null)}
+                className="text-slate-400 hover:text-slate-600 p-1 rounded-md"
+              >
+                <XIcon width={18} height={18} />
+              </button>
+            </div>
+
+            {/* Modal Content */}
+            <div className="p-6 space-y-4 overflow-y-auto flex-1">
+              {/* Target Contact Email Indicator */}
+              <div className="bg-indigo-50/60 border border-indigo-100 rounded-md p-3 text-xs flex items-center justify-between">
+                <span className="font-semibold text-indigo-900">Target Contact Email:</span>
+                <span className="font-mono font-bold text-indigo-700 bg-white px-2 py-0.5 rounded border border-indigo-200">
+                  {companyEmailMap.get(editingDraftIndex)?.[0] || lead?.email || 'No primary email set'}
+                </span>
+              </div>
+
+              {/* Subject Line Input */}
+              <div className="space-y-1">
+                <label className="text-xs font-bold text-slate-700">Subject Line</label>
+                <input
+                  type="text"
+                  value={draftSubjectInput}
+                  onChange={(e) => setDraftSubjectInput(e.target.value)}
+                  className="w-full text-xs font-semibold border border-slate-300 rounded-md px-3 py-2 focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                  placeholder="Enter email subject line..."
+                />
+              </div>
+
+              {/* Editor Mode Tabs & Formatting Controls */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between border-b border-slate-200 pb-2">
+                  <label className="text-xs font-bold text-slate-700">Email Body</label>
+                  <div className="flex items-center gap-1 bg-slate-100 p-0.5 rounded-md border border-slate-200">
+                    <button
+                      type="button"
+                      onClick={() => setEditorTab('visual')}
+                      className={[
+                        'text-xs font-bold px-3 py-1 rounded transition-all',
+                        editorTab === 'visual' ? 'bg-white text-indigo-700 shadow-2xs' : 'text-slate-500 hover:text-slate-800',
+                      ].join(' ')}
+                    >
+                      Formatted Visual Preview
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setEditorTab('code')}
+                      className={[
+                        'text-xs font-bold px-3 py-1 rounded transition-all',
+                        editorTab === 'code' ? 'bg-white text-indigo-700 shadow-2xs' : 'text-slate-500 hover:text-slate-800',
+                      ].join(' ')}
+                    >
+                      Edit Raw HTML Code
+                    </button>
+                  </div>
+                </div>
+
+                {/* Rich Formatting Toolbar (Visual Mode) */}
+                {editorTab === 'visual' && (
+                  <div className="flex items-center gap-1 bg-slate-50 p-1.5 rounded-t-md border border-slate-200 border-b-0 text-xs">
+                    <button
+                      type="button"
+                      onClick={() => setDraftBodyInput((prev) => prev + ' <strong>bold text</strong>')}
+                      className="px-2 py-0.5 rounded font-bold hover:bg-slate-200 border border-slate-300 text-slate-700"
+                    >
+                      B
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDraftBodyInput((prev) => prev + ' <em>italic text</em>')}
+                      className="px-2 py-0.5 rounded italic hover:bg-slate-200 border border-slate-300 text-slate-700"
+                    >
+                      I
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDraftBodyInput((prev) => prev + '\n<p>New paragraph here...</p>')}
+                      className="px-2 py-0.5 rounded hover:bg-slate-200 border border-slate-300 text-slate-700 font-semibold"
+                    >
+                      + Paragraph
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDraftBodyInput((prev) => prev + ' <a href="https://portfolio.url">Link</a>')}
+                      className="px-2 py-0.5 rounded hover:bg-slate-200 border border-slate-300 text-slate-700 font-semibold"
+                    >
+                      + Link
+                    </button>
+                  </div>
+                )}
+
+                {/* Body Content Input / View */}
+                {editorTab === 'visual' ? (
+                  <div className="border border-slate-200 rounded-b-md p-4 bg-slate-50/30 min-h-[180px] text-xs text-slate-800 leading-relaxed prose prose-slate max-w-none">
+                    <div dangerouslySetInnerHTML={{ __html: draftBodyInput }} />
+                  </div>
+                ) : (
+                  <textarea
+                    rows={8}
+                    value={draftBodyInput}
+                    onChange={(e) => setDraftBodyInput(e.target.value)}
+                    className="w-full text-xs font-mono border border-slate-300 rounded-md p-3 focus:ring-2 focus:ring-indigo-500 focus:outline-none bg-slate-900 text-slate-100"
+                    placeholder="<p>Hi Firstname,</p>..."
+                  />
+                )}
+              </div>
+
+              {/* AI Revision Assistant Box */}
+              <div className="bg-purple-50/60 border border-purple-200 rounded-lg p-3.5 space-y-2">
+                <label className="text-xs font-extrabold text-purple-950 flex items-center gap-1.5">
+                  <SparklesIcon width={13} height={13} className="text-purple-600" />
+                  ✨ Ask AI to Rewrite / Refine this Draft
+                </label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    placeholder="e.g. Make tone more casual, mention 70+ shipped SaaS products..."
+                    value={aiRewritePrompt}
+                    onChange={(e) => setAiRewritePrompt(e.target.value)}
+                    disabled={rewritingAi}
+                    className="flex-1 text-xs border border-purple-200 rounded-md px-3 py-1.5 focus:ring-1 focus:ring-purple-500 focus:outline-none bg-white"
+                  />
+                  <Button
+                    size="sm"
+                    onClick={() => { void handleAiRefineDraft(editingDraftIndex); }}
+                    disabled={rewritingAi || !aiRewritePrompt.trim()}
+                    className="bg-purple-600 hover:bg-purple-700 text-white text-xs px-3.5 py-1.5 font-bold shrink-0 flex items-center gap-1 disabled:opacity-50"
+                  >
+                    {rewritingAi ? <LoaderIcon width={12} height={12} className="animate-spin" /> : <SparklesIcon width={12} height={12} />}
+                    Rewrite with AI
+                  </Button>
+                </div>
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="px-6 py-3.5 border-t border-slate-200 bg-slate-50 flex items-center justify-between gap-3">
+              <button
+                type="button"
+                onClick={() => setEditingDraftIndex(null)}
+                className="text-xs font-semibold text-slate-600 hover:text-slate-800 px-3 py-1.5"
+              >
+                Cancel
+              </button>
+
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => { void handleSaveCompanyDraftEmail(editingDraftIndex, false); }}
+                  disabled={savingDraftIndex === editingDraftIndex}
+                  className="border-slate-300 text-slate-700 hover:bg-white text-xs px-3.5 py-1.5 font-semibold"
+                >
+                  Save Draft
+                </Button>
+                <Button
+                  size="sm"
+                  onClick={() => { void handleSaveCompanyDraftEmail(editingDraftIndex, true); }}
+                  disabled={savingDraftIndex === editingDraftIndex}
+                  className="bg-green-600 hover:bg-green-700 text-white text-xs px-4 py-1.5 font-bold flex items-center gap-1.5"
+                >
+                  {savingDraftIndex === editingDraftIndex ? <LoaderIcon width={12} height={12} className="animate-spin" /> : <CheckCircleIcon width={12} height={12} />}
+                  Approve & Save Draft
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

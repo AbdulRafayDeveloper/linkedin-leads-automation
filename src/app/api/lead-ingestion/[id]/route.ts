@@ -46,6 +46,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       currentCompanies?: CurrentCompanyItem[];
       addManualEmail?: string;
       discoveredEmails?: string[];
+      forceVerifyEmail?: string;
     };
 
     await connectToMongoDB();
@@ -70,10 +71,35 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       doc.currentCompanies = body.currentCompanies;
     }
 
+    // Single email force re-verify (on-demand SMTP socket check)
+    if (body.forceVerifyEmail && body.forceVerifyEmail.trim()) {
+      const emailClean = body.forceVerifyEmail.trim().toLowerCase();
+      let status: VerifiedEmailItem['status'] = 'unknown';
+      try {
+        const verifyRes = await verifyEmailSmtp(emailClean);
+        status = verifyRes.status;
+      } catch {
+        status = 'unknown';
+      }
+
+      const existingIndex = doc.verifiedEmails.findIndex((v) => v.email === emailClean);
+      if (existingIndex !== -1) {
+        doc.verifiedEmails[existingIndex].status = status;
+      } else {
+        doc.verifiedEmails.push({ email: emailClean, status });
+      }
+
+      if (doc.email === emailClean) {
+        doc.emailValidationStatus = status;
+      }
+    }
+
     // Direct replacement of discoveredEmails (for editing/removing personal/discovered emails)
     if (body.discoveredEmails !== undefined) {
       doc.discoveredEmails = body.discoveredEmails;
-      doc.email = body.discoveredEmails[0] || null;
+      if (doc.discoveredEmails.length > 0 && !doc.email) {
+        doc.email = body.discoveredEmails[0];
+      }
 
       // Re-verify any new emails
       for (const emailClean of doc.discoveredEmails) {
@@ -125,6 +151,8 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       }
     }
 
+    doc.markModified('currentCompanies');
+    doc.markModified('verifiedEmails');
     const result = await doc.save();
     return jsonOk({ result });
   } catch (error) {

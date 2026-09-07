@@ -98,8 +98,10 @@ Writing rules (follow exactly):
 export async function generateLeadEmail(
   leadId: string,
   userPrompt?: string,
-  models?: EmailGeneratorModel[],
-  sender: SenderProfile = senderProfile
+  arg3?: number | EmailGeneratorModel[],
+  arg4?: boolean | SenderProfile,
+  modelsArg?: EmailGeneratorModel[],
+  senderArg: SenderProfile = senderProfile
 ): Promise<LeadIngestionDocument> {
   await connectToMongoDB();
 
@@ -110,6 +112,27 @@ export async function generateLeadEmail(
   const doc = await LeadIngestion.findById(leadId);
   if (!doc) {
     throw new Error('Lead ingestion record not found');
+  }
+
+  let companyIndex: number | undefined = undefined;
+  let forceRegenerate = false;
+  let models: EmailGeneratorModel[] | undefined = undefined;
+  let sender: SenderProfile = senderProfile;
+
+  if (Array.isArray(arg3)) {
+    models = arg3;
+    if (arg4 && typeof arg4 === 'object' && 'name' in arg4) {
+      sender = arg4 as SenderProfile;
+    }
+  } else if (typeof arg3 === 'number') {
+    companyIndex = arg3;
+    if (typeof arg4 === 'boolean') {
+      forceRegenerate = arg4;
+    }
+    models = modelsArg;
+    if (senderArg) {
+      sender = senderArg;
+    }
   }
 
   // Retrieve persistent global custom prompt setting
@@ -131,9 +154,15 @@ export async function generateLeadEmail(
   const candidateModels = models ?? (await getFallbackChatModels()) as unknown as EmailGeneratorModel[];
 
   const companies = doc.currentCompanies ?? [];
-  for (let i = 0; i < companies.length; i++) {
+  const targetIndices = typeof companyIndex === 'number' && companyIndex >= 0 && companyIndex < companies.length
+    ? [companyIndex]
+    : companies.map((_, idx) => idx);
+
+  for (const i of targetIndices) {
     const comp = companies[i];
-    if (comp.emailSubject && comp.emailBody && !userPrompt) continue;
+    if (comp.emailSubject && comp.emailBody && !userPrompt && !forceRegenerate && typeof companyIndex !== 'number') {
+      continue;
+    }
 
     const compSummary = `${doc.summary || ''} | Company: ${comp.companyName} (${comp.jobTitle})`;
     const prompt = buildOutreachPrompt(firstName, compSummary, comp.websiteUrl, activeSender, userPrompt, globalPromptText);

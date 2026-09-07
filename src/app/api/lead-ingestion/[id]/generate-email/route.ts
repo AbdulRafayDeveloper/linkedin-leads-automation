@@ -12,14 +12,14 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
   try {
     const { id } = await params;
     
-    let body: { userPrompt?: string } = {};
+    let body: { userPrompt?: string; companyIndex?: number; forceRegenerate?: boolean } = {};
     try {
-      body = (await request.json()) as { userPrompt?: string };
+      body = (await request.json()) as { userPrompt?: string; companyIndex?: number; forceRegenerate?: boolean };
     } catch {
       // Empty body is allowed
     }
 
-    const result = await generateLeadEmail(id, body.userPrompt);
+    const result = await generateLeadEmail(id, body.userPrompt, body.companyIndex, body.forceRegenerate ?? true);
     return jsonOk({ result });
   } catch (error) {
     return jsonError(
