@@ -138,9 +138,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     // Also verifies any newly added personal emails via SMTP.
     if (body.discoveredEmails !== undefined) {
       doc.discoveredEmails = body.discoveredEmails;
-      if (doc.discoveredEmails.length > 0 && !doc.email) {
-        doc.email = body.discoveredEmails[0];
-      }
+      doc.email = doc.discoveredEmails.length > 0 ? doc.discoveredEmails[0] : null;
 
       // Verify any not-yet-verified emails in the personal pool
       for (const emailClean of doc.discoveredEmails) {

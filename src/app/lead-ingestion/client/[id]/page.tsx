@@ -806,8 +806,12 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
 
   const allDiscoveredEmails = Array.from(
     new Set([
-      ...(lead?.email ? [lead.email] : []),
-      ...(lead?.discoveredEmails ?? pipeline?.crawledEmails ?? []),
+      ...(lead?.discoveredEmails !== undefined && lead.discoveredEmails.length > 0
+        ? lead.discoveredEmails
+        : lead?.email
+        ? [lead.email]
+        : []),
+      ...(pipeline?.crawledEmails ?? []),
     ])
   );
 
