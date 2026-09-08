@@ -31,7 +31,7 @@ async function createClientWithSerial(baseName: string) {
 export async function POST(request: NextRequest) {
   const body = await request.json().catch(() => ({})) as {
     content?: string;
-    phase?: 'extract' | 'map' | 'crawl' | 'verify';
+    phase?: 'extract' | 'map' | 'crawl' | 'verify' | 'generate';
     leadId?: string;
   };
 
@@ -95,6 +95,10 @@ export async function POST(request: NextRequest) {
             clientName: clientDoc.name,
             leadId: (lead._id as mongoose.Types.ObjectId).toString(),
           });
+
+          // Generate personal outreach email draft immediately in Phase 1
+          const { generateLeadEmail } = await import('@/services/lead-ingestion/emailGenerator');
+          await generateLeadEmail((lead._id as mongoose.Types.ObjectId).toString(), { forceRegenerate: true }).catch(() => null);
 
           send(controller, 'phase_done', { step: 1 });
           controller.close();
@@ -194,6 +198,31 @@ export async function POST(request: NextRequest) {
           lead.discoveredEmails = Array.from(allEmails);
           lead.discoveredPhones = Array.from(allPhones);
           lead.crawlStatus = 'completed';
+
+          // Automatically map discovered emails to specific companies or personal email
+          const { mapEmailsToCompanies } = await import('@/services/lead-ingestion/aiExtractor');
+          const emailMapResult = mapEmailsToCompanies(
+            lead.discoveredEmails,
+            (lead.currentCompanies ?? []).map((c) => ({
+              companyName: c.companyName,
+              jobTitle: c.jobTitle,
+              workPeriod: c.workPeriod ?? null,
+              websiteUrl: c.websiteUrl ?? null,
+              roleSummary: c.summary ?? '',
+            })),
+            lead.portfolioUrl
+          );
+
+          lead.currentCompanies = (lead.currentCompanies ?? []).map((comp, idx) => ({
+            ...comp,
+            companyEmails: emailMapResult.companiesWithEmails[idx]?.companyEmails ?? comp.companyEmails ?? [],
+          }));
+          lead.markModified('currentCompanies');
+
+          if (emailMapResult.primaryPersonalEmail) {
+            lead.email = emailMapResult.primaryPersonalEmail;
+          }
+
           await lead.save();
 
           send(controller, 'phase_done', { step: 3, emails: lead.discoveredEmails, phones: lead.discoveredPhones });
@@ -243,6 +272,38 @@ export async function POST(request: NextRequest) {
 
           send(controller, 'phase_done', { step: 4, verifiedEmails: verified });
           send(controller, 'done', { result: lead.toObject() });
+          controller.close();
+          return;
+        }
+
+        // ══════════════════════════════════════════════════════════════
+        // PHASE 5 — Auto-Generate Outreach Emails
+        // ══════════════════════════════════════════════════════════════
+        if (phase === 'generate') {
+          const leadId = body.leadId;
+          if (!leadId || !mongoose.Types.ObjectId.isValid(leadId)) {
+            send(controller, 'error', { message: 'Missing leadId' });
+            controller.close();
+            return;
+          }
+
+          send(controller, 'phase', { step: 5, label: `Generating AI outreach drafts...` });
+
+          const { generateLeadEmail } = await import('@/services/lead-ingestion/emailGenerator');
+          
+          let updatedLead: mongoose.Document | null = null;
+          try {
+            // Force regenerate = true ensures drafts are ALWAYS written
+            updatedLead = await generateLeadEmail(leadId, { forceRegenerate: true });
+            send(controller, 'phase_done', { step: 5, status: 'success' });
+          } catch (err) {
+            send(controller, 'phase_done', { step: 5, status: 'failed', error: String(err) });
+          }
+
+          // Fetch the final, fully populated lead document
+          if (!updatedLead) updatedLead = await LeadIngestion.findById(leadId);
+
+          send(controller, 'done', { result: updatedLead?.toObject() });
           controller.close();
           return;
         }

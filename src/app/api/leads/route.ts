@@ -41,7 +41,16 @@ export async function GET(request: NextRequest) {
     }
 
     if (emailStatus && emailStatus !== 'all') {
-      if (emailStatus === 'pending') {
+      if (emailStatus === 'no_contact_email') {
+        andConditions.push({
+          $or: [
+            { email: null },
+            { email: '' },
+            { email: { $exists: false } },
+            { emailStatus: 'no_contact_email' },
+          ],
+        });
+      } else if (emailStatus === 'pending') {
         andConditions.push({
           $or: [
             { emailStatus: 'pending' },

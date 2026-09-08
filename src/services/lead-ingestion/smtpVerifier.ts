@@ -15,6 +15,18 @@ const DNS_UNAVAILABLE_ERROR_CODES = new Set([
   'ECANCELLED',
 ]);
 
+// Port 25 is commonly blocked by ISPs and cloud providers.
+// These errors mean we couldn't complete SMTP handshake — not that the email is invalid.
+const SMTP_BLOCKED_ERRORS = new Set([
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'ETIMEDOUT',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
+  'Connection timeout',
+  'Connection closed prematurely',
+]);
+
 const DISPOSABLE_DOMAINS = new Set([
   'mailinator.com', 'tempmail.com', 'guerrillamail.com', '10minutemail.com',
   'trashmail.com', 'yopmail.com', 'throwawaymail.com', 'sharklasers.com',
@@ -114,18 +126,70 @@ async function checkAbstractApiFallback(email: string, apiKey: string): Promise<
   return null;
 }
 
+/**
+ * Free fallback using eva.pingutil.com — no API key required.
+ * Used when port 25 SMTP is blocked/unreachable to get a real deliverable verdict.
+ *
+ * Response shape: { status: 'success', data: { deliverable, catch_all, disposable, gibberish, spam, ... } }
+ */
+async function checkEvaFreeApiFallback(email: string): Promise<SmtpVerifyResult | null> {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5000);
+    const res = await fetch(`https://api.eva.pingutil.com/email?email=${encodeURIComponent(email)}`, {
+      signal: controller.signal,
+      headers: { 'User-Agent': 'Mozilla/5.0 (email-validator)' },
+    });
+    clearTimeout(timer);
+    if (!res.ok) return null;
+
+    const json = (await res.json()) as {
+      status?: string;
+      data?: {
+        deliverable?: boolean;
+        catch_all?: boolean;
+        disposable?: boolean;
+        gibberish?: boolean;
+        spam?: boolean;
+        valid_syntax?: boolean;
+      };
+    };
+
+    if (json.status !== 'success' || !json.data) return null;
+
+    const { deliverable, catch_all, disposable, gibberish, spam } = json.data;
+
+    if (disposable || gibberish || spam) {
+      return { status: 'invalid', reasons: [`Eva API: Email flagged as ${disposable ? 'disposable' : gibberish ? 'gibberish' : 'spam'}`] };
+    }
+    if (deliverable === true) {
+      // catch_all servers accept all mail — real but unconfirmable, mark as risky
+      if (catch_all) {
+        return { status: 'risky', reasons: ['Eva API: Domain uses catch-all — email format valid but mailbox unconfirmable'] };
+      }
+      return { status: 'valid', reasons: ['Eva API: Email is deliverable'] };
+    }
+    if (deliverable === false) {
+      return { status: 'invalid', reasons: ['Eva API: Email is not deliverable'] };
+    }
+  } catch {
+    // Eva API failed or timed out — proceed to final fallback
+  }
+  return null;
+}
+
 function checkSmtpMailbox(
   host: string,
   email: string,
-  timeoutMs = 4000
-): Promise<{ success: boolean; code: number; response: string; error?: string }> {
+  timeoutMs = 6000
+): Promise<{ success: boolean; code: number; response: string; error?: string; blocked?: boolean }> {
   return new Promise((resolve) => {
     const socket = new net.Socket();
     let hasResolved = false;
     let stage = 0;
     let buffer = '';
 
-    const resolveWith = (result: { success: boolean; code: number; response: string; error?: string }) => {
+    const resolveWith = (result: { success: boolean; code: number; response: string; error?: string; blocked?: boolean }) => {
       if (hasResolved) return;
       hasResolved = true;
       socket.destroy();
@@ -188,11 +252,18 @@ function checkSmtpMailbox(
     });
 
     socket.on('error', (err) => {
+      // Detect if port 25 is simply blocked (ECONNREFUSED, ETIMEDOUT etc.)
+      const isBlocked = SMTP_BLOCKED_ERRORS.has(err.message) ||
+        (err as NodeJS.ErrnoException).code === 'ECONNREFUSED' ||
+        (err as NodeJS.ErrnoException).code === 'ETIMEDOUT' ||
+        (err as NodeJS.ErrnoException).code === 'EHOSTUNREACH';
+
       resolveWith({
         success: false,
         code: 0,
         response: '',
         error: err.message,
+        blocked: isBlocked,
       });
     });
 
@@ -202,16 +273,20 @@ function checkSmtpMailbox(
         code: 0,
         response: '',
         error: 'Connection timeout',
+        blocked: true, // Timeout on port 25 = blocked, not invalid email
       });
     });
 
     socket.on('close', () => {
-      resolveWith({
-        success: false,
-        code: 0,
-        response: '',
-        error: 'Connection closed prematurely',
-      });
+      if (!hasResolved) {
+        resolveWith({
+          success: false,
+          code: 0,
+          response: '',
+          error: 'Connection closed prematurely',
+          blocked: true,
+        });
+      }
     });
   });
 }
@@ -272,35 +347,61 @@ export async function verifyEmailSmtp(email: string): Promise<SmtpVerifyResult> 
   }
 
   // 5. Direct SMTP Handshake Check
+  // ─────────────────────────────────────────────────────────────────────────────
+  // IMPORTANT: Port 25 is blocked by most cloud providers and ISPs.
+  // A connection error (timeout, ECONNREFUSED, etc.) does NOT mean the email is invalid.
+  // It means we couldn't verify it — return 'risky' (has MX, but SMTP unreachable).
+  // Only a definitive SMTP 550/551/554 rejection means the mailbox does NOT exist.
+  // ─────────────────────────────────────────────────────────────────────────────
   const primaryServer = mxServers[0];
   const smtpCheck = await checkSmtpMailbox(primaryServer, email);
 
   if (smtpCheck.success) {
-    reasons.push(`SMTP handshake succeeded: recipient mailbox exists (${smtpCheck.code})`);
+    reasons.push(`SMTP handshake succeeded: recipient mailbox confirmed (${smtpCheck.code})`);
+    return { status: 'valid', reasons };
+  }
+
+  // Definitive rejection codes: mailbox does not exist
+  if (smtpCheck.code === 550 || smtpCheck.code === 551 || smtpCheck.code === 553 || smtpCheck.code === 554) {
+    reasons.push(`Mailbox rejected by server ${primaryServer}: ${smtpCheck.response}`);
+    return { status: 'invalid', reasons };
+  }
+
+  // Port blocked / connection failed / timeout → SMTP unreachable.
+  if (smtpCheck.blocked || smtpCheck.error) {
+    reasons.push(`SMTP port 25 blocked/unreachable for ${primaryServer} — trying provider & API fallback`);
+
+    const TRUSTED_DOMAINS = new Set([
+      'gmail.com', 'googlemail.com', 'outlook.com', 'hotmail.com',
+      'yahoo.com', 'icloud.com', 'me.com', 'live.com', 'msn.com',
+      'protonmail.com', 'proton.me', 'aol.com',
+    ]);
+
+    if (TRUSTED_DOMAINS.has(domain)) {
+      return {
+        status: 'valid',
+        reasons: [...reasons, `Trusted provider domain (${domain}) with verified MX records`],
+      };
+    }
+
+    const evaResult = await checkEvaFreeApiFallback(email);
+    if (evaResult) {
+      return { ...evaResult, reasons: [...reasons, ...evaResult.reasons] };
+    }
+
     return {
-      status: 'valid',
-      reasons,
+      status: 'risky',
+      reasons: [...reasons, `Could not reach SMTP server or free API — domain MX exists but mailbox unconfirmed`],
     };
   }
 
-  if (smtpCheck.code === 550 || smtpCheck.code === 551 || smtpCheck.code === 554) {
-    reasons.push(`Mailbox check failed on server ${primaryServer}: ${smtpCheck.response}`);
-    return {
-      status: 'invalid',
-      reasons,
-    };
+  // Any other non-success response (e.g. 421 temporary failure, 452 quota)
+  // → try Eva API first, fall through to risky
+  const evaFallback = await checkEvaFreeApiFallback(email);
+  if (evaFallback) {
+    return { ...evaFallback, reasons: [...reasons, ...evaFallback.reasons] };
   }
 
-  if (smtpCheck.error) {
-    reasons.push(`Verified MX server ${primaryServer} for domain ${domain}`);
-    return {
-      status: 'valid',
-      reasons,
-    };
-  }
-
-  return {
-    status: 'valid',
-    reasons,
-  };
+  reasons.push(`SMTP responded with code ${smtpCheck.code}: ${smtpCheck.response}`);
+  return { status: 'risky', reasons };
 }

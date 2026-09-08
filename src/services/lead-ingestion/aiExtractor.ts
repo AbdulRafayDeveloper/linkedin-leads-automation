@@ -72,7 +72,7 @@ Your task: extract a structured JSON object. Follow these rules EXACTLY.
   ],
   "rawUrls": ["<every URL found anywhere in the text>"],
   "rawEmails": ["<every email address found in the text>"],
-  "rawPhones": ["<every phone number found in the text>"]
+  "rawPhones": ["<every phone/mobile/WhatsApp number found in the text — include country codes, spaces, dashes, parentheses exactly as written. Include ALL international formats: +1, +44, +92, +971, etc.>"]
 }
 
 ### RULES:
@@ -80,12 +80,14 @@ Your task: extract a structured JSON object. Follow these rules EXACTLY.
 2. Include ALL current roles, even if there are 2 or 3.
 3. For "websiteUrl" inside each company: only put a URL if the text explicitly shows a website for THAT company. Otherwise use null.
 4. "rawUrls" = every URL found anywhere in the text (contact section, bio, etc.)
-5. Return valid JSON only. No markdown fences, no explanation text.
+5. "rawPhones" = extract ALL phone numbers regardless of country or format. Do not filter or validate them.
+6. Return valid JSON only. No markdown fences, no explanation text.
 
 ### RAW TEXT:
 """
 ${rawText}
 """`;
+
 
   const models = await getFallbackChatModels(0);
   const errors: string[] = [];
@@ -159,7 +161,8 @@ ${rawText}
     ],
     rawUrls: reg.websiteUrl ? [reg.websiteUrl] : [],
     rawEmails: reg.email ? [reg.email] : [],
-    rawPhones: reg.phoneNumber ? [reg.phoneNumber] : [],
+    // Phone extraction is AI-only — regex cannot reliably handle all international formats
+    rawPhones: [],
   };
 }
 
@@ -253,4 +256,107 @@ Rules:
     updated[0].websiteUrl = rawUrls[0];
   }
   return { companies: updated, portfolioUrl };
+}
+
+const PERSONAL_DOMAIN_REGEX = /^(gmail|yahoo|hotmail|outlook|live|icloud|me|msn|protonmail|proton|yandex|gmx|mail|zoho)\./i;
+
+export interface MappedEmailResult {
+  companiesWithEmails: Array<CompanyPosition & { companyEmails?: string[] }>;
+  personalEmails: string[];
+  primaryPersonalEmail: string | null;
+}
+
+export function mapEmailsToCompanies(
+  emails: string[],
+  companies: CompanyPosition[],
+  portfolioUrl?: string | null
+): MappedEmailResult {
+  const personalEmails: string[] = [];
+  const companyEmailMap = new Map<number, string[]>();
+  companies.forEach((_, idx) => companyEmailMap.set(idx, []));
+
+  for (const rawEmail of emails) {
+    const email = rawEmail.trim().toLowerCase();
+    if (!email || !email.includes('@')) continue;
+
+    const domain = email.split('@')[1] || '';
+
+    // 1. Check if personal email provider
+    if (PERSONAL_DOMAIN_REGEX.test(domain)) {
+      if (!personalEmails.includes(email)) personalEmails.push(email);
+      continue;
+    }
+
+    // 2. Check if matches portfolio domain
+    let isPortfolio = false;
+    if (portfolioUrl) {
+      try {
+        const portHost = new URL(portfolioUrl.startsWith('http') ? portfolioUrl : `https://${portfolioUrl}`).hostname.toLowerCase();
+        if (domain.includes(portHost) || portHost.includes(domain)) {
+          isPortfolio = true;
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    if (isPortfolio) {
+      if (!personalEmails.includes(email)) personalEmails.push(email);
+      continue;
+    }
+
+    // 3. Try matching to companies by websiteUrl domain or companyName
+    let matchedCompanyIdx = -1;
+    companies.forEach((comp, idx) => {
+      if (matchedCompanyIdx !== -1) return;
+
+      if (comp.websiteUrl) {
+        try {
+          const compHost = new URL(comp.websiteUrl.startsWith('http') ? comp.websiteUrl : `https://${comp.websiteUrl}`).hostname.toLowerCase();
+          const cleanDomain = domain.replace(/^www\./, '');
+          const cleanCompHost = compHost.replace(/^www\./, '');
+          if (cleanCompHost.includes(cleanDomain) || cleanDomain.includes(cleanCompHost)) {
+            matchedCompanyIdx = idx;
+          }
+        } catch {
+          // ignore
+        }
+      }
+
+      if (matchedCompanyIdx === -1 && comp.companyName) {
+        const compSlug = comp.companyName.toLowerCase().replace(/[^a-z0-9]/g, '');
+        const domainSlug = domain.split('.')[0].replace(/[^a-z0-9]/g, '');
+        if (compSlug && domainSlug && (compSlug.includes(domainSlug) || domainSlug.includes(compSlug))) {
+          matchedCompanyIdx = idx;
+        }
+      }
+    });
+
+    if (matchedCompanyIdx !== -1) {
+      const existing = companyEmailMap.get(matchedCompanyIdx) || [];
+      if (!existing.includes(email)) existing.push(email);
+      companyEmailMap.set(matchedCompanyIdx, existing);
+    } else {
+      if (companies.length > 0) {
+        const existing = companyEmailMap.get(0) || [];
+        if (!existing.includes(email)) existing.push(email);
+        companyEmailMap.set(0, existing);
+      } else {
+        if (!personalEmails.includes(email)) personalEmails.push(email);
+      }
+    }
+  }
+
+  const companiesWithEmails = companies.map((comp, idx) => ({
+    ...comp,
+    companyEmails: companyEmailMap.get(idx) || [],
+  }));
+
+  const primaryPersonalEmail = personalEmails[0] ?? null;
+
+  return {
+    companiesWithEmails,
+    personalEmails,
+    primaryPersonalEmail,
+  };
 }

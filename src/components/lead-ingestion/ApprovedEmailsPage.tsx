@@ -107,13 +107,13 @@ export default function ApprovedEmailsPage() {
     (lead.verifiedEmails ?? []).forEach((v) => verifiedMap.set(v.email, v.status));
 
     const companies = lead.currentCompanies ?? [];
-    let hasCompanyDrafts = false;
 
+    // 1. Render all Approved Company-specific Drafts
     companies.forEach((comp, idx) => {
       if (comp.approved && comp.emailSubject && comp.emailBody) {
-        hasCompanyDrafts = true;
-        const targetEm = comp.companyEmails?.[0] || lead.email || '';
-        const status = verifiedMap.get(targetEm) ?? 'pending';
+        const compEmails = comp.companyEmails ?? [];
+        const targetEm = compEmails[0] ?? '';
+        const status = targetEm ? (verifiedMap.get(targetEm) ?? 'pending') : 'pending';
 
         allItems.push({
           id: `${lead._id}-comp-${idx}`,
@@ -133,22 +133,24 @@ export default function ApprovedEmailsPage() {
       }
     });
 
-    if (!hasCompanyDrafts && lead.approved && lead.emailSubject && lead.emailBody) {
-      const primaryComp = companies[0];
+    // 2. Render Approved Personal / Primary Draft
+    if (lead.approved && lead.emailSubject && lead.emailBody) {
+      const targetEm = lead.email ?? '';
+      const status = targetEm ? (verifiedMap.get(targetEm) ?? lead.emailValidationStatus ?? 'pending') : 'pending';
       allItems.push({
-        id: `${lead._id}-main`,
+        id: `${lead._id}-personal`,
         leadId: lead._id,
         clientId: lead.clientId,
         candidateName: lead.fullName || 'Candidate Profile',
         clientName: (lead as unknown as { clientName?: string }).clientName || 'Client Profile',
-        companyName: primaryComp?.companyName || lead.companyName || 'Corporate Profile',
-        jobTitle: primaryComp?.jobTitle || lead.jobTitle || 'Professional',
-        targetEmail: primaryComp?.companyEmails?.[0] || lead.email || '',
-        emailStatus: verifiedMap.get(primaryComp?.companyEmails?.[0] || lead.email || '') ?? 'pending',
+        companyName: lead.companyName || 'Personal / Direct Email',
+        jobTitle: lead.jobTitle || 'Personal Contact',
+        targetEmail: targetEm,
+        emailStatus: status,
         subject: lead.emailSubject,
         bodyHtml: lead.emailBody,
         createdAt: lead.createdAt,
-        companyIndex: 0,
+        companyIndex: -1,
       });
     }
   });
@@ -402,10 +404,17 @@ export default function ApprovedEmailsPage() {
                 <CardContent className="pt-2 space-y-3 flex-1 flex flex-col justify-between">
                   <div className="space-y-1">
                     <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Contact Email</span>
-                    <div className="flex items-center justify-between bg-slate-50 border border-slate-200 rounded px-2.5 py-1.5 gap-1">
-                      <span className="text-[11px] font-mono font-bold text-slate-800 truncate">{item.targetEmail}</span>
-                      <SmtpBadge status={item.emailStatus} />
-                    </div>
+                    {item.targetEmail ? (
+                      <div className="flex items-center justify-between bg-slate-50 border border-slate-200 rounded px-2.5 py-1.5 gap-1">
+                        <span className="text-[11px] font-mono font-bold text-slate-800 truncate">{item.targetEmail}</span>
+                        <SmtpBadge status={item.emailStatus} />
+                      </div>
+                    ) : (
+                      <div className="flex items-center justify-between bg-amber-50 border border-amber-200 rounded px-2.5 py-1.5 gap-1">
+                        <span className="text-[11px] font-semibold text-amber-800 italic">No contact email assigned</span>
+                        <Badge tone="warning">⚠️ No Email Found</Badge>
+                      </div>
+                    )}
                   </div>
 
                   <div className="space-y-1 bg-white border border-slate-100 p-2.5 rounded-md">

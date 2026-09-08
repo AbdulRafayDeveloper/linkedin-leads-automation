@@ -11,8 +11,19 @@ interface RouteParams {
 export async function POST(request: NextRequest, { params }: RouteParams) {
   try {
     const { id } = await params;
-    const body = (await request.json().catch(() => ({}))) as { additionalUrls?: string[] };
-    const result = await startWebsiteDiscovery(id, body.additionalUrls || []);
+    const body = (await request.json().catch(() => ({}))) as {
+      additionalUrls?: string[];
+      companyIndex?: number;
+    };
+
+    // Pass companyIndex so discovered emails go to the correct company box,
+    // not the global personal discoveredEmails pool.
+    const result = await startWebsiteDiscovery(
+      id,
+      body.additionalUrls ?? [],
+      typeof body.companyIndex === 'number' ? body.companyIndex : undefined
+    );
+
     if (!result) {
       return jsonError('Lead record not found', 404);
     }

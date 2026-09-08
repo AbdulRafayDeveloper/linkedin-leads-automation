@@ -83,7 +83,7 @@ describe('emailGenerator', () => {
     };
 
     const leadId = 'mock-id-123';
-    const result = (await generateLeadEmail(leadId, undefined, [mockModel], senderMock)) as any;
+    const result = (await generateLeadEmail(leadId, { models: [mockModel], sender: senderMock })) as any;
 
     expect(result.emailSubject).toBe('Outreach to Jane Doe');
     expect(result.emailBody).toContain('Hello Jane, I noticed your MERN skills.');

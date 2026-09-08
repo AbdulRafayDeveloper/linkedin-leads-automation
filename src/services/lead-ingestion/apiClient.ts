@@ -16,7 +16,9 @@ export interface CurrentCompanyItem {
   jobTitle: string;
   workPeriod: string | null;
   websiteUrl: string | null;
-  roleSummary: string;
+  // Note: stored as 'summary' in DB but may also appear as 'roleSummary' from AI extractor
+  summary?: string;
+  roleSummary?: string;
   companyEmails?: string[];
   emailSubject?: string | null;
   emailBody?: string | null;
@@ -83,12 +85,13 @@ export async function getIngestedLeadsApi(clientId: string): Promise<{ results: 
 export async function crawlLeadWebsiteApi(
   id: string,
   websiteUrl?: string,
-  additionalUrls?: string[]
+  additionalUrls?: string[],
+  companyIndex?: number
 ): Promise<{ result: LeadIngestionRecord }> {
   return handle(await fetch(`${BASE}/lead-ingestion/${id}/crawl`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ websiteUrl, additionalUrls }),
+    body: JSON.stringify({ websiteUrl, additionalUrls, companyIndex }),
   }));
 }
 
@@ -146,7 +149,12 @@ export interface CampaignRecord {
 
 export async function updateLeadDetailsApi(
   id: string,
-  updates: Partial<LeadIngestionRecord> & { addManualEmail?: string; forceVerifyEmail?: string }
+  updates: Partial<LeadIngestionRecord> & {
+    addManualEmail?: string;
+    forceVerifyEmail?: string;
+    /** SMTP-verify company emails without polluting the personal discoveredEmails pool */
+    verifyCompanyEmails?: string[];
+  }
 ): Promise<{ result: LeadIngestionRecord }> {
   return handle(await fetch(`${BASE}/lead-ingestion/${id}`, {
     method: 'PUT',

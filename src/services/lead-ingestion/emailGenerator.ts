@@ -97,12 +97,15 @@ Writing rules (follow exactly):
 
 export async function generateLeadEmail(
   leadId: string,
-  userPrompt?: string,
-  arg3?: number | EmailGeneratorModel[],
-  arg4?: boolean | SenderProfile,
-  modelsArg?: EmailGeneratorModel[],
-  senderArg: SenderProfile = senderProfile
+  options: {
+    userPrompt?: string;
+    companyIndex?: number;
+    forceRegenerate?: boolean;
+    models?: EmailGeneratorModel[];
+    sender?: SenderProfile;
+  } = {}
 ): Promise<LeadIngestionDocument> {
+  const { userPrompt, companyIndex, forceRegenerate = false, models, sender = senderProfile } = options;
   await connectToMongoDB();
 
   if (!mongoose.Types.ObjectId.isValid(leadId)) {
@@ -112,27 +115,6 @@ export async function generateLeadEmail(
   const doc = await LeadIngestion.findById(leadId);
   if (!doc) {
     throw new Error('Lead ingestion record not found');
-  }
-
-  let companyIndex: number | undefined = undefined;
-  let forceRegenerate = false;
-  let models: EmailGeneratorModel[] | undefined = undefined;
-  let sender: SenderProfile = senderProfile;
-
-  if (Array.isArray(arg3)) {
-    models = arg3;
-    if (arg4 && typeof arg4 === 'object' && 'name' in arg4) {
-      sender = arg4 as SenderProfile;
-    }
-  } else if (typeof arg3 === 'number') {
-    companyIndex = arg3;
-    if (typeof arg4 === 'boolean') {
-      forceRegenerate = arg4;
-    }
-    models = modelsArg;
-    if (senderArg) {
-      sender = senderArg;
-    }
   }
 
   // Retrieve persistent global custom prompt setting
@@ -154,49 +136,96 @@ export async function generateLeadEmail(
   const candidateModels = models ?? (await getFallbackChatModels()) as unknown as EmailGeneratorModel[];
 
   const companies = doc.currentCompanies ?? [];
-  const targetIndices = typeof companyIndex === 'number' && companyIndex >= 0 && companyIndex < companies.length
-    ? [companyIndex]
-    : companies.map((_, idx) => idx);
+  const isTargetingSpecificCompany = typeof companyIndex === 'number' && companyIndex >= 0;
+  const isTargetingPersonalOnly = companyIndex === -1;
 
-  for (const i of targetIndices) {
-    const comp = companies[i];
-    if (comp.emailSubject && comp.emailBody && !userPrompt && !forceRegenerate && typeof companyIndex !== 'number') {
-      continue;
-    }
+  // ── 1. Generate Company Outreach Drafts ─────────────────────────────────────
+  if (!isTargetingPersonalOnly) {
+    const targetIndices = isTargetingSpecificCompany
+      ? [companyIndex]
+      : companies.map((_, idx) => idx);
 
-    const compSummary = `${doc.summary || ''} | Company: ${comp.companyName} (${comp.jobTitle})`;
-    const prompt = buildOutreachPrompt(firstName, compSummary, comp.websiteUrl, activeSender, userPrompt, globalPromptText);
+    for (const i of targetIndices) {
+      const comp = companies[i];
+      if (!comp) continue;
 
-    for (const model of candidateModels) {
-      try {
-        const response = await model.invoke(prompt);
-        const rawText = extractContent(response);
-        const jsonMatch = rawText.match(/\{[\s\S]*\}/);
-        if (!jsonMatch) continue;
+      // Skip only if draft already exists AND no explicit userPrompt AND not forceRegenerate
+      if (comp.emailSubject && comp.emailBody && !userPrompt && !forceRegenerate) {
+        continue;
+      }
 
-        const parsed = JSON.parse(jsonMatch[0]) as { subject: string; body: string };
-        if (!parsed.subject || !parsed.body) continue;
+      const compSummary = `${doc.summary || ''} | Company: ${comp.companyName} (${comp.jobTitle})`;
+      const prompt = buildOutreachPrompt(firstName, compSummary, comp.websiteUrl, activeSender, userPrompt, globalPromptText);
 
-        let subject = stripDashes(parsed.subject);
-        if (subject.length > 350) subject = subject.slice(0, 350);
+      for (const model of candidateModels) {
+        try {
+          const response = await model.invoke(prompt);
+          const rawText = extractContent(response);
+          const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+          if (!jsonMatch) continue;
 
-        const cleanBody = ensureStartsWithFirstNameHtml(parsed.body, firstName);
-        const signatureHtml = `<p>${formatSenderSignature(activeSender).replace(/\n/g, '<br />')}</p>`;
-        const fullHtmlBody = `${cleanBody}\n\n${signatureHtml}`;
+          const parsed = JSON.parse(jsonMatch[0]) as { subject: string; body: string };
+          if (!parsed.subject || !parsed.body) continue;
 
-        comp.emailSubject = subject;
-        comp.emailBody = fullHtmlBody;
-        comp.approved = false;
+          let subject = stripDashes(parsed.subject);
+          if (subject.length > 350) subject = subject.slice(0, 350);
 
-        if (i === 0) {
-          doc.emailSubject = subject;
-          doc.emailBody = fullHtmlBody;
-          doc.emailStatus = 'pending';
+          const cleanBody = ensureStartsWithFirstNameHtml(parsed.body, firstName);
+          const signatureHtml = `<p>${formatSenderSignature(activeSender).replace(/\n/g, '<br />')}</p>`;
+
+          comp.emailSubject = subject;
+          comp.emailBody = `${cleanBody}\n\n${signatureHtml}`;
+          comp.approved = false;
+          break;
+        } catch {
+          // try next model
         }
+      }
+    }
+  }
 
-        break;
-      } catch {
-        // try next model
+  // ── 2. Generate Personal Outreach Draft ────────────────────────────────────
+  // Always generated when not targeting a specific company position (or when explicitly requested via index -1)
+  if (!isTargetingSpecificCompany) {
+    const personalDraftMissing = !doc.emailSubject || !doc.emailBody;
+    const shouldWritePersonalDraft = personalDraftMissing || !!userPrompt || forceRegenerate || isTargetingPersonalOnly;
+
+    if (shouldWritePersonalDraft) {
+      const personalSummary = doc.summary || `${firstName} is a professional. Outreach via direct personal inbox.`;
+      const personalWebsite = doc.portfolioUrl || null;
+      const prompt = buildOutreachPrompt(
+        firstName,
+        personalSummary,
+        personalWebsite,
+        activeSender,
+        userPrompt,
+        globalPromptText
+      );
+
+      for (const model of candidateModels) {
+        try {
+          const response = await model.invoke(prompt);
+          const rawText = extractContent(response);
+          const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+          if (!jsonMatch) continue;
+
+          const parsed = JSON.parse(jsonMatch[0]) as { subject: string; body: string };
+          if (!parsed.subject || !parsed.body) continue;
+
+          let subject = stripDashes(parsed.subject);
+          if (subject.length > 350) subject = subject.slice(0, 350);
+
+          const cleanBody = ensureStartsWithFirstNameHtml(parsed.body, firstName);
+          const signatureHtml = `<p>${formatSenderSignature(activeSender).replace(/\n/g, '<br />')}</p>`;
+
+          doc.emailSubject = subject;
+          doc.emailBody = `${cleanBody}\n\n${signatureHtml}`;
+          doc.emailStatus = 'pending';
+          doc.approved = false;
+          break;
+        } catch {
+          // try next model
+        }
       }
     }
   }
@@ -204,6 +233,7 @@ export async function generateLeadEmail(
   doc.markModified('currentCompanies');
   return await doc.save();
 }
+
 
 export async function refineEmailWithAi(
   leadId: string,

@@ -74,28 +74,6 @@ function extractEmail(text: string): string | null {
   return match ? match[0] : null;
 }
 
-function extractPhoneNumber(text: string): string | null {
-  const phoneRegexes = [
-    /\+\d{1,3}[-.\s]?\(?\d{1,4}\)?[-.\s]?\d{3,4}[-.\s]?\d{3,4}/g,
-    /\b\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b/g,
-    /\b0[123789]\d{1,4}[-.\s]?\d{3,4}[-.\s]?\d{3,4}\b/g,
-  ];
-
-  for (const regex of phoneRegexes) {
-    const matches = text.match(regex) || [];
-    for (const match of matches) {
-      const cleaned = match.trim();
-      if (/\d+\.\d{2,}/.test(cleaned)) continue;
-      if (/\.\d+/.test(cleaned)) continue;
-      if (/(\d{1,3}\s+){3,}/.test(cleaned)) continue;
-      const digitsOnly = cleaned.replace(/\D/g, '');
-      if (digitsOnly.length >= 10 && digitsOnly.length <= 15) {
-        return cleaned;
-      }
-    }
-  }
-  return null;
-}
 
 function extractWebsite(text: string): string | null {
   const matches = text.match(/https?:\/\/(?!(?:[\w-]+\.)?linkedin\.com)[^\s<>"'()[\]]+/ig);
@@ -113,13 +91,12 @@ function extractWebsite(text: string): string | null {
 export interface RegexExtractedData {
   fullName: string | null;
   email: string | null;
-  phoneNumber: string | null;
   websiteUrl: string | null;
 }
 
 export function extractWithRegex(rawText: string): RegexExtractedData {
   if (!rawText || !rawText.trim()) {
-    return { fullName: null, email: null, phoneNumber: null, websiteUrl: null };
+    return { fullName: null, email: null, websiteUrl: null };
   }
 
   const cleanedFull = decodeHtmlEntities(stripHtmlTags(rawText));
@@ -131,13 +108,11 @@ export function extractWithRegex(rawText: string): RegexExtractedData {
 
   const fullName = extractFullName(lines, cleanedFull);
   const email = extractEmail(cleanedFull);
-  const phoneNumber = extractPhoneNumber(cleanedFull);
   const websiteUrl = extractWebsite(cleanedFull);
 
   return {
     fullName,
     email,
-    phoneNumber,
     websiteUrl,
   };
 }

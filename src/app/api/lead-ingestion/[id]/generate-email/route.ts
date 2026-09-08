@@ -19,7 +19,11 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       // Empty body is allowed
     }
 
-    const result = await generateLeadEmail(id, body.userPrompt, body.companyIndex, body.forceRegenerate ?? true);
+    const result = await generateLeadEmail(id, {
+      userPrompt: body.userPrompt,
+      companyIndex: body.companyIndex,
+      forceRegenerate: body.forceRegenerate ?? true,
+    });
     return jsonOk({ result });
   } catch (error) {
     return jsonError(

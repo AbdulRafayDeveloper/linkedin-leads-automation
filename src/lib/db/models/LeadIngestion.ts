@@ -47,7 +47,7 @@ export interface LeadIngestionDocument extends Document {
   emailSubject: string | null;
   emailBody: string | null;
   approved: boolean;
-  emailStatus: 'pending' | 'in_progress' | 'delivered' | 'opened' | 'failed';
+  emailStatus: 'pending' | 'in_progress' | 'delivered' | 'opened' | 'failed' | 'no_contact_email';
   createdAt: Date;
   updatedAt: Date;
 }
@@ -84,6 +84,10 @@ const LeadIngestionSchema = new Schema<LeadIngestionDocument>(
           workPeriod: { type: String, default: null },
           websiteUrl: { type: String, default: null },
           summary: { type: String, default: '' },
+          companyEmails: { type: [String], default: [] },
+          emailSubject: { type: String, default: null },
+          emailBody: { type: String, default: null },
+          approved: { type: Boolean, default: false },
         },
       ],
       default: [],
@@ -125,7 +129,7 @@ const LeadIngestionSchema = new Schema<LeadIngestionDocument>(
     approved: { type: Boolean, default: false },
     emailStatus: {
       type: String,
-      enum: ['pending', 'in_progress', 'delivered', 'opened', 'failed'],
+      enum: ['pending', 'in_progress', 'delivered', 'opened', 'failed', 'no_contact_email'],
       default: 'pending',
       index: true,
     },

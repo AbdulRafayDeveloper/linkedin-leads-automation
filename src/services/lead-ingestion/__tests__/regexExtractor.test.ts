@@ -6,7 +6,7 @@ Senior Full Stack Engineer at Acme Corporation
 San Francisco, CA
 
 About
-Jane is an experienced engineer. Reach her at jane.doe@acme.com or call +1 (555) 019-2834.
+Jane is an experienced engineer. Reach her at jane.doe@acme.com.
 
 https://www.linkedin.com/in/janedoe
 https://www.acme.com
@@ -23,11 +23,6 @@ describe('regexExtractor', () => {
     expect(result.email).toBe('jane.doe@acme.com');
   });
 
-  it('extracts phone number successfully', () => {
-    const result = extractWithRegex(TEST_SAMPLE);
-    expect(result.phoneNumber).toBe('+1 (555) 019-2834');
-  });
-
   it('extracts website URL distinct from social media links', () => {
     const result = extractWithRegex(TEST_SAMPLE);
     expect(result.websiteUrl).toBe('https://www.acme.com');
@@ -38,8 +33,14 @@ describe('regexExtractor', () => {
     expect(result).toEqual({
       fullName: null,
       email: null,
-      phoneNumber: null,
       websiteUrl: null,
     });
+  });
+
+  it('phone extraction is handled by AI (not regex)', () => {
+    // Phone numbers are now extracted by AI in aiExtractor.ts to support
+    // all international formats. regexExtractor no longer returns phoneNumber.
+    const result = extractWithRegex(TEST_SAMPLE);
+    expect((result as unknown as Record<string, unknown>).phoneNumber).toBeUndefined();
   });
 });

@@ -20,7 +20,8 @@ export async function getClients(): Promise<ClientDocument[]> {
 
 export async function startWebsiteDiscovery(
   leadId: string,
-  additionalUrls: string[] = []
+  additionalUrls: string[] = [],
+  companyIndex?: number
 ): Promise<LeadIngestionDocument | null> {
   await connectToMongoDB();
   if (!mongoose.Types.ObjectId.isValid(leadId)) throw new Error('Invalid lead ID');
@@ -40,11 +41,31 @@ export async function startWebsiteDiscovery(
   try {
     const targetUrl = doc.websiteUrl ?? doc.portfolioUrl ?? additionalUrls[0] ?? '';
     const crawl = await findEmailsOnWebsite(targetUrl, doc.additionalUrls);
-    doc.discoveredEmails = crawl.emails;
+
+    // ── Assign discovered emails to the correct bucket ──────────────────
+    // When companyIndex is provided (user crawled a specific company URL),
+    // assign emails directly to that company's companyEmails array.
+    // Always also merge into discoveredEmails for global SMTP verification.
+    if (typeof companyIndex === 'number' && doc.currentCompanies[companyIndex]) {
+      const comp = doc.currentCompanies[companyIndex];
+      const existing = comp.companyEmails ?? [];
+      const merged = Array.from(new Set([...existing, ...crawl.emails]));
+      doc.currentCompanies[companyIndex] = { ...comp, companyEmails: merged };
+      doc.markModified('currentCompanies');
+
+      // Also merge into discoveredEmails for global SMTP tracking
+      const allDiscovered = Array.from(new Set([...doc.discoveredEmails, ...crawl.emails]));
+      doc.discoveredEmails = allDiscovered;
+    } else {
+      // No companyIndex: merge into global discoveredEmails pool
+      const merged = Array.from(new Set([...(doc.discoveredEmails ?? []), ...crawl.emails]));
+      doc.discoveredEmails = merged;
+    }
+
     doc.discoveredPhones = crawl.phones;
     doc.siteType = crawl.siteType;
 
-    const emailsToVerify = Array.from(new Set([...(doc.email ? [doc.email] : []), ...crawl.emails]));
+    const emailsToVerify = Array.from(new Set([...(doc.email ? [doc.email] : []), ...doc.discoveredEmails]));
     const verified: VerifiedEmailItem[] = [];
     await Promise.all(
       emailsToVerify.map(async (em) => {
@@ -60,7 +81,9 @@ export async function startWebsiteDiscovery(
     doc.verifiedEmails = verified;
     if (emailsToVerify.length > 0) {
       if (!doc.email) doc.email = emailsToVerify[0];
-      doc.emailValidationStatus = verified.find((v) => v.email === doc.email)?.status ?? 'unknown';
+      // Only update personal emailValidationStatus for the personal primary email
+      const personalStatus = verified.find((v) => v.email === doc.email)?.status;
+      if (personalStatus) doc.emailValidationStatus = personalStatus;
     } else {
       doc.emailValidationStatus = 'unknown';
     }

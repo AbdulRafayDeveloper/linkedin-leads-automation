@@ -42,18 +42,19 @@ interface GeneratedEmailItem {
   subject: string;
   bodyHtml: string;
   approved: boolean;
-  sendStatus: 'pending' | 'in_progress' | 'delivered' | 'opened' | 'failed';
+  sendStatus: 'pending' | 'in_progress' | 'delivered' | 'opened' | 'failed' | 'no_contact_email';
   companyIndex: number;
 }
 
 function SmtpBadge({ status }: { status: VerifiedEmailItem['status'] }) {
-  if (status === 'valid') return <Badge tone="success">Verified SMTP</Badge>;
-  if (status === 'invalid') return <Badge tone="danger">Invalid</Badge>;
-  if (status === 'risky') return <Badge tone="warning">Risky</Badge>;
-  return <Badge tone="neutral">Unverified</Badge>;
+  if (status === 'valid') return <Badge tone="success">✓ Verified SMTP</Badge>;
+  if (status === 'invalid') return <Badge tone="danger">❌ Invalid SMTP</Badge>;
+  if (status === 'risky') return <Badge tone="warning">⚠️ Risky SMTP</Badge>;
+  return <Badge tone="warning">⚡ SMTP Not Verified</Badge>;
 }
 
 function SendStatusBadge({ status }: { status: GeneratedEmailItem['sendStatus'] }) {
+  if (status === 'no_contact_email') return <Badge tone="warning">⚠️ No Contact Email</Badge>;
   if (status === 'opened') return <Badge tone="info">Opened</Badge>;
   if (status === 'delivered') return <Badge tone="success">Delivered</Badge>;
   if (status === 'failed') return <Badge tone="danger">Failed</Badge>;
@@ -402,12 +403,15 @@ function EmailEditModal({
         }
       }
 
+      // Use verifyCompanyEmails (not addManualEmail) so the target email is SMTP-verified
+      // but NOT pushed into discoveredEmails (the personal pool) — preventing the "email
+      // disappears and reappears in another box" bug.
       const res = await updateLeadDetailsApi(emailItem.leadId, {
         currentCompanies: companies,
         emailSubject: companies[0]?.emailSubject ?? subjectInput,
         emailBody: companies[0]?.emailBody ?? bodyHtmlInput,
         approved: companies[0]?.approved ?? isApproved,
-        ...(targetEmailInput.trim() ? { addManualEmail: targetEmailInput.trim() } : {}),
+        ...(targetEmailInput.trim() ? { verifyCompanyEmails: [targetEmailInput.trim()] } : {}),
       });
 
       onLeadUpdated(res.result);
@@ -622,18 +626,27 @@ function CompactEmailCard({
                 </div>
               </div>
 
-              <button
-                type="button"
-                onClick={handleToggleApproval}
-                className={[
-                  'text-[10px] px-2.5 py-0.5 rounded-full font-bold border transition-all shrink-0',
-                  emailItem.approved
-                    ? 'bg-green-600 text-white border-green-600'
-                    : 'bg-slate-100 text-slate-600 border-slate-200 hover:bg-slate-200',
-                ].join(' ')}
-              >
-                {emailItem.approved ? '✓ Approved' : 'Draft'}
-              </button>
+              <div className="flex items-center gap-1.5 shrink-0">
+                {!emailItem.targetEmail ? (
+                  <Badge tone="warning">⚠️ No Email Found</Badge>
+                ) : emailItem.emailStatus !== 'valid' ? (
+                  <Badge tone="warning">⚡ SMTP Not Verified</Badge>
+                ) : (
+                  <Badge tone="success">✓ SMTP Verified</Badge>
+                )}
+                <button
+                  type="button"
+                  onClick={handleToggleApproval}
+                  className={[
+                    'text-[10px] px-2.5 py-0.5 rounded-full font-bold border transition-all shrink-0',
+                    emailItem.approved
+                      ? 'bg-green-600 text-white border-green-600'
+                      : 'bg-slate-100 text-slate-600 border-slate-200 hover:bg-slate-200',
+                  ].join(' ')}
+                >
+                  {emailItem.approved ? '✓ Approved' : 'Draft'}
+                </button>
+              </div>
             </div>
           }
         />
@@ -653,7 +666,10 @@ function CompactEmailCard({
                 <SmtpBadge status={emailItem.emailStatus} />
               </div>
             ) : (
-              <div className="text-[11px] italic text-slate-400">No email assigned</div>
+              <div className="flex items-center justify-between bg-amber-50 border border-amber-200 rounded px-2.5 py-1.5 gap-1">
+                <span className="text-[11px] font-semibold text-amber-800 italic">No contact email assigned</span>
+                <Badge tone="warning">⚠️ No Email Found</Badge>
+              </div>
             )}
           </div>
 
@@ -718,7 +734,7 @@ export default function OutreachEmailsPage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedClientId, setSelectedClientId] = useState<string>('all');
   const [approvalFilter, setApprovalFilter] = useState<'approved' | 'draft' | 'all'>('all');
-  const [sendStatusFilter, setSendStatusFilter] = useState<'all' | 'pending' | 'in_progress' | 'delivered' | 'opened' | 'failed'>('all');
+  const [sendStatusFilter, setSendStatusFilter] = useState<'all' | 'no_contact_email' | 'pending' | 'in_progress' | 'delivered' | 'opened' | 'failed'>('all');
 
   // Server-Side Pagination State
   const [page, setPage] = useState(1);
@@ -814,13 +830,15 @@ export default function OutreachEmailsPage() {
 
     const companies = lead.currentCompanies ?? [];
 
-    let hasCompanyDrafts = false;
-
+    // 1. Render all Company-specific Drafts
     companies.forEach((comp, idx) => {
       if (comp.emailSubject && comp.emailBody) {
-        hasCompanyDrafts = true;
-        const targetEm = comp.companyEmails?.[0] || lead.email || '';
-        const status = verifiedMap.get(targetEm) ?? 'pending';
+        const compEmails = comp.companyEmails ?? [];
+        const targetEm = compEmails[0] ?? '';
+        const status = targetEm ? (verifiedMap.get(targetEm) ?? 'pending') : 'pending';
+        const computedSendStatus: GeneratedEmailItem['sendStatus'] = !targetEm.trim()
+          ? 'no_contact_email'
+          : (lead.emailStatus as GeneratedEmailItem['sendStatus']) ?? 'pending';
 
         allGeneratedEmailItems.push({
           item: {
@@ -837,7 +855,7 @@ export default function OutreachEmailsPage() {
             subject: comp.emailSubject,
             bodyHtml: comp.emailBody,
             approved: comp.approved ?? false,
-            sendStatus: (lead.emailStatus as GeneratedEmailItem['sendStatus']) ?? 'pending',
+            sendStatus: computedSendStatus,
             companyIndex: idx,
           },
           leadDoc: lead,
@@ -845,25 +863,31 @@ export default function OutreachEmailsPage() {
       }
     });
 
-    if (!hasCompanyDrafts && lead.emailSubject && lead.emailBody) {
-      const primaryComp = companies[0];
+    // 2. Render Personal / Primary Draft (always rendered if subject & body exist)
+    if (lead.emailSubject && lead.emailBody) {
+      const targetEm = lead.email ?? '';
+      const status = targetEm ? (verifiedMap.get(targetEm) ?? lead.emailValidationStatus ?? 'pending') : 'pending';
+      const computedSendStatus: GeneratedEmailItem['sendStatus'] = !targetEm.trim()
+        ? 'no_contact_email'
+        : (lead.emailStatus as GeneratedEmailItem['sendStatus']) ?? 'pending';
+
       allGeneratedEmailItems.push({
         item: {
-          id: `${lead._id}-main`,
+          id: `${lead._id}-personal`,
           leadId: lead._id,
           clientId: lead.clientId,
           candidateName: lead.fullName || 'Candidate Profile',
           clientName: (lead as unknown as { clientName?: string }).clientName || 'Client Profile',
           linkedinUrl: (lead as unknown as { linkedinUrl?: string }).linkedinUrl || null,
-          companyName: primaryComp?.companyName || lead.companyName || 'Corporate Profile',
-          jobTitle: primaryComp?.jobTitle || lead.jobTitle || 'Professional',
-          targetEmail: primaryComp?.companyEmails?.[0] || lead.email || '',
-          emailStatus: verifiedMap.get(primaryComp?.companyEmails?.[0] || lead.email || '') ?? 'pending',
+          companyName: lead.companyName || 'Personal / Direct Email',
+          jobTitle: lead.jobTitle || 'Personal Contact',
+          targetEmail: targetEm,
+          emailStatus: status,
           subject: lead.emailSubject,
           bodyHtml: lead.emailBody,
           approved: lead.approved ?? false,
-          sendStatus: (lead.emailStatus as GeneratedEmailItem['sendStatus']) ?? 'pending',
-          companyIndex: 0,
+          sendStatus: computedSendStatus,
+          companyIndex: -1, // -1 denotes root personal draft
         },
         leadDoc: lead,
       });
@@ -937,11 +961,12 @@ export default function OutreachEmailsPage() {
 
               {/* Custom Styled Vertical Send Status Filter */}
               <div className="flex items-center gap-1.5 text-xs text-slate-500 font-semibold">
-                <span>Send Status:</span>
-                <CustomSelect<'all' | 'pending' | 'in_progress' | 'delivered' | 'opened' | 'failed'>
+                <span>Send / Contact Status:</span>
+                <CustomSelect<'all' | 'no_contact_email' | 'pending' | 'in_progress' | 'delivered' | 'opened' | 'failed'>
                   value={sendStatusFilter}
                   options={[
-                    { value: 'all', label: 'All Send Statuses' },
+                    { value: 'all', label: 'All Statuses' },
+                    { value: 'no_contact_email', label: '⚠️ No Contact Email' },
                     { value: 'pending', label: 'Pending' },
                     { value: 'in_progress', label: 'In Progress' },
                     { value: 'delivered', label: 'Delivered' },
@@ -949,7 +974,7 @@ export default function OutreachEmailsPage() {
                     { value: 'failed', label: 'Failed' },
                   ]}
                   onChange={setSendStatusFilter}
-                  widthClass="w-40"
+                  widthClass="w-48"
                 />
               </div>
             </div>

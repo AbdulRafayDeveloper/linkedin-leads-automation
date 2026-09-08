@@ -34,7 +34,7 @@ interface PipelineState {
   leadId: string;
   clientId: string | null;
   clientName: string | null;
-  phase: 1 | 2 | 3 | 4 | 'done';
+  phase: 1 | 2 | 3 | 4 | 5 | 'done';
   running: boolean;
   error: string | null;
   mappedCompanies: CurrentCompanyItem[] | null;
@@ -75,56 +75,132 @@ async function readStream(
 
 // ── Helper: Strict Email Deduplication Across Sub-Boxes ───────────────────────
 
+const PERSONAL_PROVIDER_DOMAINS = new Set([
+  'gmail.com', 'googlemail.com', 'outlook.com', 'hotmail.com',
+  'yahoo.com', 'icloud.com', 'me.com', 'live.com', 'msn.com',
+  'protonmail.com', 'proton.me', 'aol.com', 'yandex.com', 'gmx.com', 'mail.com', 'zoho.com'
+]);
+
 function getCategorizedEmails(
   companies: CurrentCompanyItem[],
-  allDiscoveredEmails: string[]
+  allDiscoveredEmails: string[],
+  portfolioUrl?: string | null
 ) {
   const companyEmailMap = new Map<number, string[]>();
   const assignedSet = new Set<string>();
+  const personalEmailsSet = new Set<string>();
 
-  // 1. First: Explicit company emails assigned to specific companies
+  const getDomain = (email: string) => (email.split('@')[1] || '').toLowerCase().trim();
+  const getSlug = (str: string) => str.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+  let portfolioHost = '';
+  if (portfolioUrl) {
+    try {
+      portfolioHost = new URL(portfolioUrl.startsWith('http') ? portfolioUrl : `https://${portfolioUrl}`).hostname.replace(/^www\./, '').toLowerCase();
+    } catch {
+      portfolioHost = (portfolioUrl || '').toLowerCase();
+    }
+  }
+
+  // 1. Explicitly assigned companyEmails on each company object
   companies.forEach((comp, idx) => {
-    const explicit = comp.companyEmails ?? [];
-    const uniqueExplicit = explicit.filter((e) => !assignedSet.has(e.toLowerCase()));
-    uniqueExplicit.forEach((e) => assignedSet.add(e.toLowerCase()));
-    companyEmailMap.set(idx, uniqueExplicit);
+    const explicit = (comp.companyEmails ?? []).map((e) => e.toLowerCase().trim()).filter(Boolean);
+    const validCompanyEmails: string[] = [];
+
+    explicit.forEach((e) => {
+      const dom = getDomain(e);
+      if (!PERSONAL_PROVIDER_DOMAINS.has(dom) && !assignedSet.has(e)) {
+        validCompanyEmails.push(e);
+        assignedSet.add(e);
+      }
+    });
+    companyEmailMap.set(idx, validCompanyEmails);
   });
 
-  // 2. Next: Match unassigned discovered emails by domain to company websites
-  companies.forEach((comp, idx) => {
-    if (!comp.websiteUrl) return;
-    let domain = '';
-    try {
-      domain = new URL(comp.websiteUrl.startsWith('http') ? comp.websiteUrl : `https://${comp.websiteUrl}`).hostname.replace(/^www\./, '').toLowerCase();
-    } catch {
-      domain = (comp.websiteUrl || '').toLowerCase();
-    }
+  // 2. Classify all discovered emails
+  allDiscoveredEmails.forEach((rawEmail) => {
+    const email = rawEmail.toLowerCase().trim();
+    if (!email || assignedSet.has(email)) return;
+
+    const domain = getDomain(email);
     if (!domain) return;
 
-    const remainingDiscovered = allDiscoveredEmails.filter((e) => !assignedSet.has(e.toLowerCase()));
-    const matched = remainingDiscovered.filter((e) => {
-      const emDomain = (e.split('@')[1] || '').toLowerCase();
-      return domain.includes(emDomain) || emDomain.includes(domain);
+    // A. Personal Provider Domain (gmail, yahoo, outlook, etc.)
+    if (PERSONAL_PROVIDER_DOMAINS.has(domain)) {
+      personalEmailsSet.add(email);
+      assignedSet.add(email);
+      return;
+    }
+
+    // B. Personal Portfolio Domain Match
+    if (portfolioHost && (portfolioHost.includes(domain) || domain.includes(portfolioHost))) {
+      personalEmailsSet.add(email);
+      assignedSet.add(email);
+      return;
+    }
+
+    // C. Match to Companies by websiteUrl or companyName slug
+    let matchedIdx = -1;
+
+    companies.forEach((comp, idx) => {
+      if (matchedIdx !== -1) return;
+
+      // C1. Website URL domain match
+      if (comp.websiteUrl) {
+        try {
+          const compHost = new URL(comp.websiteUrl.startsWith('http') ? comp.websiteUrl : `https://${comp.websiteUrl}`).hostname.replace(/^www\./, '').toLowerCase();
+          if (compHost.includes(domain) || domain.includes(compHost)) {
+            matchedIdx = idx;
+          }
+        } catch {
+          // ignore
+        }
+      }
+
+      // C2. Company Name slug match (e.g. HSQ Solution -> hsqsolution vs hsqsolution.site)
+      if (matchedIdx === -1 && comp.companyName) {
+        const compSlug = getSlug(comp.companyName);
+        const domainSlug = getSlug(domain.split('.')[0] || '');
+        if (compSlug && domainSlug && (compSlug.includes(domainSlug) || domainSlug.includes(compSlug))) {
+          matchedIdx = idx;
+        }
+      }
     });
 
-    matched.forEach((e) => assignedSet.add(e.toLowerCase()));
-    const existing = companyEmailMap.get(idx) ?? [];
-    companyEmailMap.set(idx, Array.from(new Set([...existing, ...matched])));
+    if (matchedIdx !== -1) {
+      const existing = companyEmailMap.get(matchedIdx) ?? [];
+      if (!existing.includes(email)) {
+        companyEmailMap.set(matchedIdx, [...existing, email]);
+      }
+      assignedSet.add(email);
+      return;
+    }
+
+    // D. If company email (custom domain) did not match a specific company, assign to first company if available
+    if (companies.length > 0) {
+      const existing = companyEmailMap.get(0) ?? [];
+      if (!existing.includes(email)) {
+        companyEmailMap.set(0, [...existing, email]);
+      }
+      assignedSet.add(email);
+    } else {
+      // No companies exist at all, store under personal
+      personalEmailsSet.add(email);
+      assignedSet.add(email);
+    }
   });
 
-  // 3. Remaining unassigned emails belong strictly to Personal Profile
-  const personalEmails = allDiscoveredEmails.filter((e) => !assignedSet.has(e.toLowerCase()));
-
+  const personalEmails = Array.from(personalEmailsSet);
   return { companyEmailMap, personalEmails };
 }
 
 // ── Badges & Step Indicators ──────────────────────────────────────────────────
 
 function SmtpBadge({ status }: { status: VerifiedEmailItem['status'] }) {
-  if (status === 'valid') return <Badge tone="success">Verified SMTP</Badge>;
-  if (status === 'invalid') return <Badge tone="danger">Invalid</Badge>;
-  if (status === 'risky') return <Badge tone="warning">Risky</Badge>;
-  return <Badge tone="neutral">Unverified</Badge>;
+  if (status === 'valid') return <Badge tone="success">✓ Verified SMTP</Badge>;
+  if (status === 'invalid') return <Badge tone="danger">❌ Email Not Exist</Badge>;
+  if (status === 'risky') return <Badge tone="warning">⚠️ Risky SMTP</Badge>;
+  return <Badge tone="warning">⚡ SMTP Not Verified</Badge>;
 }
 
 function StepBadge({ n, label, done, active }: { n: number; label: string; done: boolean; active: boolean }) {
@@ -145,8 +221,8 @@ function StepBadge({ n, label, done, active }: { n: number; label: string; done:
   );
 }
 
-function PhaseSteps({ phase, running }: { phase: 1 | 2 | 3 | 4 | 'done'; running: boolean }) {
-  const currentStep = phase === 'done' ? 5 : phase;
+function PhaseSteps({ phase, running }: { phase: 1 | 2 | 3 | 4 | 5 | 'done'; running: boolean }) {
+  const currentStep = phase === 'done' ? 6 : phase;
   return (
     <div className="flex flex-wrap items-center gap-x-4 gap-y-2 bg-white border border-slate-200 rounded-lg p-4">
       {[
@@ -154,10 +230,11 @@ function PhaseSteps({ phase, running }: { phase: 1 | 2 | 3 | 4 | 'done'; running
         { n: 2, label: 'URL Mapping' },
         { n: 3, label: 'Web Crawl' },
         { n: 4, label: 'SMTP Verify' },
+        { n: 5, label: 'AI Drafting' },
       ].map((s, i) => (
         <span key={s.n} className="flex items-center gap-1.5">
           <StepBadge n={s.n} label={s.label} done={currentStep > s.n} active={currentStep === s.n && running} />
-          {i < 3 && <span className="text-slate-300 text-xs">→</span>}
+          {i < 4 && <span className="text-slate-300 text-xs">→</span>}
         </span>
       ))}
       {running && (
@@ -216,7 +293,7 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
   const [rewritingAi, setRewritingAi] = useState(false);
 
   async function callPhase(
-    phase: 'extract' | 'map' | 'crawl' | 'verify',
+    phase: 'extract' | 'map' | 'crawl' | 'verify' | 'generate',
     body: Record<string, unknown>
   ) {
     const res = await fetch('/api/lead-ingestion/stream', {
@@ -245,7 +322,7 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
           setLead(fetchedLead);
           setCustomPersonalWebInput(fetchedLead.portfolioUrl || '');
 
-          if (!fetchedLead.emailSubject && fetchedLead.status !== 'completed') {
+          if (fetchedLead.crawlStatus !== 'completed' || fetchedLead.status !== 'completed') {
             void runAutoPipeline(fetchedLead._id);
           }
         }
@@ -313,8 +390,6 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
         setPipeline((prev) => prev ? ({ ...prev, phase: 4, crawledEmails, crawledPhones }) : null);
 
         const verifyBody = await callPhase('verify', { leadId: targetLeadId });
-        let finalLead: LeadIngestionRecord | null = null;
-
         await readStream(verifyBody, (event, data) => {
           const d = data as Record<string, unknown>;
           if (event === 'verified') {
@@ -323,19 +398,37 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
               verifiedEmails: [...prev.verifiedEmails, { email: d.email as string, status: d.status as VerifiedEmailItem['status'] }],
             }) : null);
           }
-          if (event === 'done') finalLead = d.result as LeadIngestionRecord;
         });
 
-        try {
-          const emailRes = await generateLeadEmailApi(targetLeadId);
-          finalLead = emailRes.result;
-        } catch { /* ignore */ }
+        // Phase 5: Generate Email Drafts (Always runs)
+        setPipeline((prev) => prev ? ({ ...prev, phase: 5 }) : null);
+        const generateBody = await callPhase('generate', { leadId: targetLeadId });
+        let finalLead: LeadIngestionRecord | null = null;
+        
+        await readStream(generateBody, (event, data) => {
+          if (event === 'done') finalLead = (data as Record<string, unknown>).result as LeadIngestionRecord;
+        });
 
         if (finalLead) setLead(finalLead);
-
         setPipeline((prev) => prev ? ({ ...prev, running: false, phase: 'done', finalLead }) : null);
+
       } else {
-        setPipeline((prev) => prev ? ({ ...prev, running: false }) : null);
+        // No websites to crawl — skip directly to verify & generate
+        setPipeline((prev) => prev ? ({ ...prev, phase: 4 }) : null);
+        
+        const verifyBody = await callPhase('verify', { leadId: targetLeadId });
+        await readStream(verifyBody, () => {});
+
+        setPipeline((prev) => prev ? ({ ...prev, phase: 5 }) : null);
+        const generateBody = await callPhase('generate', { leadId: targetLeadId });
+        let finalLead: LeadIngestionRecord | null = null;
+        
+        await readStream(generateBody, (event, data) => {
+          if (event === 'done') finalLead = (data as Record<string, unknown>).result as LeadIngestionRecord;
+        });
+
+        if (finalLead) setLead(finalLead);
+        setPipeline((prev) => prev ? ({ ...prev, running: false, phase: 'done', finalLead }) : null);
       }
     } catch (err) {
       setPipeline((p) => p ? ({ ...p, running: false, error: err instanceof Error ? err.message : 'Pipeline failed' }) : null);
@@ -425,7 +518,9 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
         websiteUrl: updatedCompanies[0]?.websiteUrl ?? lead?.websiteUrl,
       });
 
-      const crawlRes = await crawlLeadWebsiteApi(id, newUrl.trim());
+      // Pass companyIndex so the crawl service assigns discovered emails
+      // directly to this company's companyEmails, not the personal pool.
+      const crawlRes = await crawlLeadWebsiteApi(id, newUrl.trim(), [], companyIndex);
       setLead(crawlRes.result);
       setEditingWebIndex(null);
       setCustomWebInput('');
@@ -452,7 +547,8 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
     }
   };
 
-  // Save edited company emails & trigger instant SMTP verification
+  // Save edited company emails & trigger SMTP verification via verifyCompanyEmails
+  // (does NOT call addManualEmail which would push to discoveredEmails/personal pool)
   const handleSaveCompanyEmails = async (companyIndex: number) => {
     if (!id) return;
     setSavingCompanyEmails(true);
@@ -484,9 +580,11 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
         companyEmails: Array.from(new Set(parsedEmails)),
       };
 
+      // Use verifyCompanyEmails (not addManualEmail) so emails are SMTP-verified
+      // but NOT pushed into discoveredEmails (the personal pool).
       const res = await updateLeadDetailsApi(id, {
         currentCompanies: updatedCompanies,
-        ...(parsedEmails.length > 0 ? { addManualEmail: parsedEmails.join(',') } : {}),
+        ...(parsedEmails.length > 0 ? { verifyCompanyEmails: parsedEmails } : {}),
       });
       setLead(res.result);
       setEditingCompanyEmailIndex(null);
@@ -497,7 +595,7 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
     }
   };
 
-  // Save edited personal emails & trigger instant SMTP verification
+  // Save edited personal emails & trigger instant SMTP verification via discoveredEmails update
   const handleSavePersonalEmails = async () => {
     if (!id) return;
     setSavingPersonalEmails(true);
@@ -520,9 +618,10 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
         return;
       }
 
+      // Set discoveredEmails directly — the API handler will SMTP-verify any new ones
+      // and update emailValidationStatus for the personal primary email automatically.
       const res = await updateLeadDetailsApi(id, {
         discoveredEmails: Array.from(new Set(parsedEmails)),
-        ...(parsedEmails.length > 0 ? { addManualEmail: parsedEmails.join(',') } : {}),
       });
       setLead(res.result);
       setEditingPersonalEmails(false);
@@ -563,11 +662,22 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
     }
   };
 
-  // Save company draft subject & body from modal
+  // Save company or personal draft subject & body from modal
   const handleSaveCompanyDraftEmail = async (companyIndex: number, markApproved: boolean = false) => {
     if (!id) return;
     setSavingDraftIndex(companyIndex);
     try {
+      if (companyIndex === -1) {
+        const res = await updateLeadDetailsApi(id, {
+          emailSubject: draftSubjectInput,
+          emailBody: draftBodyInput,
+          ...(markApproved ? { approved: true } : {}),
+        });
+        setLead(res.result);
+        setEditingDraftIndex(null);
+        return;
+      }
+
       const updatedCompanies = [...companies];
       updatedCompanies[companyIndex] = {
         ...updatedCompanies[companyIndex],
@@ -591,7 +701,30 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
     }
   };
 
-  // Per-Company AI Draft Regeneration
+  const handleToggleApprovePersonalDraft = async () => {
+    if (!id) return;
+    setPageError(null);
+    try {
+      const primaryEmail = personalEmails[0] || lead?.email || '';
+      const emailStatus = verifiedMap.get(primaryEmail);
+
+      if (!lead?.approved) {
+        if (!primaryEmail || emailStatus !== 'valid') {
+          setPageError('Cannot approve email draft! Target contact email must be entered and SMTP verified as valid before approval.');
+          return;
+        }
+      }
+
+      const res = await updateLeadDetailsApi(id, {
+        approved: !lead?.approved,
+      });
+      setLead(res.result);
+    } catch (e) {
+      setPageError(e instanceof Error ? e.message : 'Failed to update approval');
+    }
+  };
+
+  // Per-Company / Personal AI Draft Regeneration
   const handleRegenerateCompanyDraft = async (companyIndex: number) => {
     if (!id) return;
     setRegeneratingCompIndex(companyIndex);
@@ -614,10 +747,15 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
     try {
       const res = await generateLeadEmailApi(id, aiRewritePrompt.trim(), companyIndex);
       setLead(res.result);
-      const updatedComp = res.result.currentCompanies?.[companyIndex];
-      if (updatedComp) {
-        setDraftSubjectInput(updatedComp.emailSubject || draftSubjectInput);
-        setDraftBodyInput(updatedComp.emailBody || draftBodyInput);
+      if (companyIndex === -1) {
+        setDraftSubjectInput(res.result.emailSubject || draftSubjectInput);
+        setDraftBodyInput(res.result.emailBody || draftBodyInput);
+      } else {
+        const updatedComp = res.result.currentCompanies?.[companyIndex];
+        if (updatedComp) {
+          setDraftSubjectInput(updatedComp.emailSubject || draftSubjectInput);
+          setDraftBodyInput(updatedComp.emailBody || draftBodyInput);
+        }
       }
       setAiRewritePrompt('');
     } catch (e) {
@@ -673,7 +811,7 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
     ])
   );
 
-  const { companyEmailMap, personalEmails } = getCategorizedEmails(companies, allDiscoveredEmails);
+  const { companyEmailMap, personalEmails } = getCategorizedEmails(companies, allDiscoveredEmails, portfolioUrl);
   const personalPhones = Array.from(new Set<string>([...(lead?.discoveredPhones ?? []), ...(pipeline?.crawledPhones ?? [])]));
 
   return (
@@ -690,6 +828,27 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
             title={`${fullName}`}
             description="Candidate Profile & Lead Intelligence Workspace"
           />
+        </div>
+        <div className="flex items-center gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={!!pipeline?.running || isAnyCrawlActive}
+            onClick={() => { void runAutoPipeline(id); }}
+            className="flex items-center gap-1.5 text-xs text-indigo-700 border-indigo-200 bg-indigo-50 hover:bg-indigo-100 font-bold disabled:opacity-40"
+          >
+            {pipeline?.running ? (
+              <>
+                <LoaderIcon width={13} height={13} className="animate-spin text-indigo-600" />
+                Pipeline Running...
+              </>
+            ) : (
+              <>
+                <RefreshIcon width={13} height={13} className="text-indigo-600" />
+                ⚡ Run Crawl & Verification
+              </>
+            )}
+          </Button>
         </div>
       </div>
 
@@ -870,7 +1029,10 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
               ) : (
                 <>
                   {personalEmails.length === 0 ? (
-                    <div className="text-slate-400 italic text-[11px]">No unique personal email address mapped yet. Click Edit Personal Email(s) above.</div>
+                    <div className="flex items-center justify-between bg-amber-50 border border-amber-200 rounded-md px-3 py-2 text-xs">
+                      <span className="text-amber-800 font-semibold italic">No personal email address mapped yet</span>
+                      <Badge tone="warning">⚠️ No Personal Email</Badge>
+                    </div>
                   ) : (
                     <ul className="space-y-1.5">
                       {personalEmails.map((em: string) => {
@@ -938,6 +1100,102 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
                 ))}
               </div>
             )}
+
+            {/* IN-BOX PERSONAL AI OUTREACH DRAFT EMAIL & REGENERATE */}
+            {(() => {
+              const primaryPersonalEmail = personalEmails[0] || lead?.email || '';
+              const personalSmtpStatus = primaryPersonalEmail ? (verifiedMap.get(primaryPersonalEmail) ?? 'pending') : null;
+
+              return (
+                <div className="border border-blue-200 bg-white rounded-md p-3.5 space-y-2 mt-3 shadow-2xs">
+                  <div className="flex flex-wrap items-center justify-between border-b border-slate-100 pb-2 gap-2">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-extrabold text-blue-950 flex items-center gap-1.5">
+                        <SparklesIcon width={13} height={13} className="text-blue-500" />
+                        Personal AI Outreach Draft Email
+                      </span>
+                      {!primaryPersonalEmail ? (
+                        <Badge tone="warning">⚠️ No Email Found</Badge>
+                      ) : personalSmtpStatus === 'valid' ? (
+                        <Badge tone="success">✓ Verified SMTP</Badge>
+                      ) : personalSmtpStatus === 'invalid' ? (
+                        <Badge tone="danger">❌ Email Not Exist</Badge>
+                      ) : (
+                        <Badge tone="warning">⚡ SMTP Not Verified</Badge>
+                      )}
+                    </div>
+
+                <div className="flex items-center gap-2">
+                  {/* Personal Draft Regenerate Button */}
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={regeneratingCompIndex === -1 || isAnyCrawlActive}
+                    onClick={() => { void handleRegenerateCompanyDraft(-1); }}
+                    className="text-[10px] px-2.5 py-0.5 border-blue-200 text-blue-700 hover:bg-blue-50 flex items-center gap-1 font-semibold disabled:opacity-40"
+                  >
+                    {regeneratingCompIndex === -1 ? (
+                      <>
+                        <LoaderIcon width={11} height={11} className="animate-spin text-blue-600" />
+                        Generating Draft...
+                      </>
+                    ) : (
+                      <>
+                        <SparklesIcon width={11} height={11} className="text-blue-600" />
+                        ✨ Regenerate Draft
+                      </>
+                    )}
+                  </Button>
+
+                  <Button
+                    size="sm"
+                    variant={lead?.approved ? 'primary' : 'outline'}
+                    onClick={() => { void handleToggleApprovePersonalDraft(); }}
+                    className={[
+                      'text-[10px] px-2.5 py-0.5 font-bold transition-all',
+                      lead?.approved
+                        ? 'bg-green-600 hover:bg-green-700 text-white border-green-600'
+                        : 'border-slate-300 text-slate-600 hover:bg-slate-50',
+                    ].join(' ')}
+                  >
+                    {lead?.approved ? '✓ Approved' : 'Approve Draft'}
+                  </Button>
+
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      setEditingDraftIndex(-1);
+                      setDraftSubjectInput(lead?.emailSubject || '');
+                      setDraftBodyInput(lead?.emailBody || '');
+                    }}
+                    className="text-[10px] px-2 py-0.5 border-blue-200 text-blue-700 hover:bg-blue-50 flex items-center gap-1 font-semibold"
+                  >
+                    <EditIcon width={11} height={11} />
+                    Preview & Edit
+                  </Button>
+                  </div>
+                </div>
+
+              {/* Formatted HTML Display (No raw HTML tags) */}
+              {lead?.emailSubject && lead?.emailBody ? (
+                <div className="space-y-2 pt-1">
+                  <div className="text-xs font-bold text-slate-900 border-b border-slate-100 pb-1.5 flex items-center justify-between">
+                    <span>Subject: <span className="font-semibold text-slate-800">{lead.emailSubject}</span></span>
+                  </div>
+                  <div
+                    className="text-xs text-slate-700 leading-relaxed font-sans prose prose-slate max-w-none pt-1"
+                    dangerouslySetInnerHTML={{ __html: lead.emailBody }}
+                  />
+                </div>
+              ) : (
+                <div className="text-xs text-slate-400 italic py-2 text-center">
+                  No personal AI draft generated yet. Click &quot;✨ Regenerate Draft&quot; above to generate one.
+                </div>
+              )}
+            </div>
+          );
+        })()}
           </div>
 
           {/* Company Sub-Boxes Updated In-Place with Strict Email Deduplication */}
@@ -1097,10 +1355,13 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
                     ) : (
                       <>
                         {compEmails.length === 0 ? (
-                          <div className="text-slate-400 italic text-[11px]">
-                            {isCrawlingThis
-                              ? 'Extracting contact emails from website...'
-                              : 'No contact emails for this company. Click Edit Emails above.'}
+                          <div className="flex items-center justify-between bg-amber-50 border border-amber-200 rounded-md px-3 py-2 text-xs">
+                            <span className="text-amber-800 font-semibold italic">
+                              {isCrawlingThis
+                                ? 'Extracting contact emails from website...'
+                                : 'No contact emails for this company'}
+                            </span>
+                            <Badge tone="warning">⚠️ No Company Email</Badge>
                           </div>
                         ) : (
                           <ul className="space-y-1.5">
@@ -1167,12 +1428,28 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
                   </div>
 
                   {/* IN-BOX AI OUTREACH DRAFT EMAIL & PER-COMPANY REGENERATE */}
-                  <div className="border border-indigo-200 bg-white rounded-md p-3.5 space-y-2 mt-3 shadow-2xs">
-                    <div className="flex flex-wrap items-center justify-between border-b border-slate-100 pb-2 gap-2">
-                      <span className="text-xs font-extrabold text-indigo-950 flex items-center gap-1.5">
-                        <SparklesIcon width={13} height={13} className="text-indigo-500" />
-                        AI Outreach Draft Email
-                      </span>
+                  {(() => {
+                    const primaryCompEmail = compEmails[0] || '';
+                    const compSmtpStatus = primaryCompEmail ? (verifiedMap.get(primaryCompEmail) ?? 'pending') : null;
+
+                    return (
+                      <div className="border border-indigo-200 bg-white rounded-md p-3.5 space-y-2 mt-3 shadow-2xs">
+                        <div className="flex flex-wrap items-center justify-between border-b border-slate-100 pb-2 gap-2">
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-extrabold text-indigo-950 flex items-center gap-1.5">
+                              <SparklesIcon width={13} height={13} className="text-indigo-500" />
+                              AI Outreach Draft Email
+                            </span>
+                            {!primaryCompEmail ? (
+                              <Badge tone="warning">⚠️ No Email Found</Badge>
+                            ) : compSmtpStatus === 'valid' ? (
+                              <Badge tone="success">✓ Verified SMTP</Badge>
+                            ) : compSmtpStatus === 'invalid' ? (
+                              <Badge tone="danger">❌ Email Not Exist</Badge>
+                            ) : (
+                              <Badge tone="warning">⚡ SMTP Not Verified</Badge>
+                            )}
+                          </div>
 
                       <div className="flex items-center gap-2">
                         {/* Per-Company Draft Regenerate Button */}
@@ -1243,9 +1520,11 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
                       </div>
                     )}
                   </div>
-                </div>
-              );
-            })}
+                );
+              })()}
+            </div>
+          );
+        })}
           </div>
         </CardContent>
       </Card>
@@ -1259,7 +1538,7 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
               <div className="flex items-center gap-2">
                 <SparklesIcon width={18} height={18} className="text-indigo-600" />
                 <h3 className="text-base font-extrabold text-slate-900">
-                  Outreach Email Draft — {companies[editingDraftIndex]?.companyName}
+                  Outreach Email Draft — {editingDraftIndex === -1 ? `${fullName} (Personal Direct)` : companies[editingDraftIndex]?.companyName}
                 </h3>
               </div>
               <button
@@ -1277,7 +1556,7 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
               <div className="bg-indigo-50/60 border border-indigo-100 rounded-md p-3 text-xs flex items-center justify-between">
                 <span className="font-semibold text-indigo-900">Target Contact Email:</span>
                 <span className="font-mono font-bold text-indigo-700 bg-white px-2 py-0.5 rounded border border-indigo-200">
-                  {companyEmailMap.get(editingDraftIndex)?.[0] || lead?.email || 'No primary email set'}
+                  {editingDraftIndex === -1 ? (personalEmails[0] || lead?.email || 'No primary personal email set') : (companyEmailMap.get(editingDraftIndex)?.[0] || lead?.email || 'No primary email set')}
                 </span>
               </div>
 
