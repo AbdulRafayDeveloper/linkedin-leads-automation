@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 import {
   updateLeadDetailsApi,
   refineLeadEmailApi,
+  crawlLeadWebsiteApi,
   type ClientRecord,
   type LeadIngestionRecord,
   type VerifiedEmailItem,
@@ -24,6 +25,9 @@ import {
   ExternalLinkIcon,
   AlertTriangleIcon,
   XIcon,
+  GlobeIcon,
+  RefreshIcon,
+  PlusCircleIcon,
 } from '@/components/ui/Icons';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -343,16 +347,148 @@ function EmailEditModal({
   onClose: () => void;
   onLeadUpdated: (updated: LeadIngestionRecord) => void;
 }) {
+  const [currentLead, setCurrentLead] = useState<LeadIngestionRecord>(leadDoc);
   const [targetEmailInput, setTargetEmailInput] = useState(emailItem.targetEmail);
+  const [multipleEmailsInput, setMultipleEmailsInput] = useState('');
   const [subjectInput, setSubjectInput] = useState(emailItem.subject);
   const [bodyHtmlInput, setBodyHtmlInput] = useState(emailItem.bodyHtml);
   const [isApproved, setIsApproved] = useState(emailItem.approved);
   const [refinePrompt, setRefinePrompt] = useState('');
 
+  // Web Crawling state inside modal
+  const compObj = currentLead.currentCompanies?.[emailItem.companyIndex];
+  const initialWebUrl = emailItem.companyIndex === -1
+    ? (currentLead.portfolioUrl || currentLead.websiteUrl || '')
+    : (compObj?.websiteUrl || currentLead.websiteUrl || '');
+  const [websiteUrlInput, setWebsiteUrlInput] = useState(initialWebUrl);
+  const [crawling, setCrawling] = useState(false);
+  const [verifyingEmail, setVerifyingEmail] = useState<string | null>(null);
+
   const [saving, setSaving] = useState(false);
   const [refining, setRefining] = useState(false);
   const [copiedAll, setCopiedAll] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [successMsg, setSuccessMsg] = useState<string | null>(null);
+
+  const verifiedMap = new Map<string, VerifiedEmailItem['status']>();
+  (currentLead.verifiedEmails ?? []).forEach((v) => verifiedMap.set(v.email, v.status));
+
+  // Determine current list of emails for this specific box
+  const availableEmails: string[] = Array.from(new Set(
+    emailItem.companyIndex === -1
+      ? (currentLead.discoveredEmails ?? (currentLead.email ? [currentLead.email] : []))
+      : (compObj?.companyEmails ?? [])
+  ));
+
+  const targetStatus = targetEmailInput.trim() ? (verifiedMap.get(targetEmailInput.trim().toLowerCase()) ?? 'pending') : null;
+
+  // Handler: Crawl Website directly inside Modal
+  const handleCrawlWebsiteInModal = async () => {
+    if (!websiteUrlInput.trim()) return;
+    setCrawling(true);
+    setError(null);
+    setSuccessMsg(null);
+    try {
+      const updatedCompanies = [...(currentLead.currentCompanies ?? [])];
+      if (emailItem.companyIndex !== -1 && updatedCompanies[emailItem.companyIndex]) {
+        updatedCompanies[emailItem.companyIndex].websiteUrl = websiteUrlInput.trim();
+      }
+      await updateLeadDetailsApi(emailItem.leadId, {
+        currentCompanies: updatedCompanies,
+        ...(emailItem.companyIndex === -1 ? { portfolioUrl: websiteUrlInput.trim() } : {}),
+      });
+
+      const crawlRes = await crawlLeadWebsiteApi(
+        emailItem.leadId,
+        websiteUrlInput.trim(),
+        [],
+        emailItem.companyIndex === -1 ? undefined : emailItem.companyIndex
+      );
+
+      setCurrentLead(crawlRes.result);
+      onLeadUpdated(crawlRes.result);
+
+      const freshComp = crawlRes.result.currentCompanies?.[emailItem.companyIndex];
+      const freshEmails = emailItem.companyIndex === -1
+        ? (crawlRes.result.discoveredEmails ?? [])
+        : (freshComp?.companyEmails ?? []);
+
+      if (freshEmails.length > 0 && !targetEmailInput) {
+        setTargetEmailInput(freshEmails[0]);
+      }
+
+      setSuccessMsg(`✓ Extracted emails from ${websiteUrlInput.trim()}! Total: ${freshEmails.length} email(s).`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to crawl website');
+    } finally {
+      setCrawling(false);
+    }
+  };
+
+  // Handler: Single Email SMTP Re-verify directly inside Modal
+  const handleVerifyEmailInModal = async (emailToVerify: string) => {
+    if (!emailToVerify.trim()) return;
+    setVerifyingEmail(emailToVerify);
+    setError(null);
+    try {
+      const res = await updateLeadDetailsApi(emailItem.leadId, {
+        ...(emailItem.companyIndex === -1
+          ? { forceVerifyEmail: emailToVerify.trim() }
+          : { verifyCompanyEmails: [emailToVerify.trim()] }),
+      });
+      setCurrentLead(res.result);
+      onLeadUpdated(res.result);
+      setSuccessMsg(`✓ SMTP verification completed for ${emailToVerify.trim()}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'SMTP verification failed');
+    } finally {
+      setVerifyingEmail(null);
+    }
+  };
+
+  // Handler: Add Multiple Emails & SMTP Verify directly inside Modal
+  const handleAddMultipleEmails = async () => {
+    if (!multipleEmailsInput.trim()) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const parsed = multipleEmailsInput
+        .split(/[,;\s]+/)
+        .map((e) => e.trim().toLowerCase())
+        .filter((e) => e.includes('@'));
+
+      if (parsed.length === 0) {
+        setError('No valid email addresses found in input.');
+        setSaving(false);
+        return;
+      }
+
+      const updatedCompanies = [...(currentLead.currentCompanies ?? [])];
+      if (emailItem.companyIndex !== -1 && updatedCompanies[emailItem.companyIndex]) {
+        const existing = updatedCompanies[emailItem.companyIndex].companyEmails ?? [];
+        updatedCompanies[emailItem.companyIndex].companyEmails = Array.from(new Set([...existing, ...parsed]));
+      }
+
+      const res = await updateLeadDetailsApi(emailItem.leadId, {
+        ...(emailItem.companyIndex !== -1
+          ? { currentCompanies: updatedCompanies, verifyCompanyEmails: parsed }
+          : { addManualEmail: parsed.join(','), discoveredEmails: Array.from(new Set([...(currentLead.discoveredEmails ?? []), ...parsed])) }),
+      });
+
+      setCurrentLead(res.result);
+      onLeadUpdated(res.result);
+
+      if (!targetEmailInput && parsed[0]) {
+        setTargetEmailInput(parsed[0]);
+      }
+      setMultipleEmailsInput('');
+      setSuccessMsg(`✓ Added & SMTP-verified ${parsed.length} email address(es)!`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to add emails');
+    } finally {
+      setSaving(false);
+    }
+  };
 
   const handleCopyAll = async () => {
     try {
@@ -369,8 +505,8 @@ function EmailEditModal({
   const handleToggleModalApprove = () => {
     setError(null);
     if (!isApproved) {
-      if (!targetEmailInput.trim() || emailItem.emailStatus !== 'valid') {
-        setError('Cannot approve draft! Target contact email must be entered and SMTP verified as valid before approval.');
+      if (!targetEmailInput.trim() || targetStatus !== 'valid') {
+        setError('Cannot approve draft! Target contact email must be selected and SMTP verified as valid before approval.');
         return;
       }
     }
@@ -381,15 +517,15 @@ function EmailEditModal({
     setSaving(true);
     setError(null);
     try {
-      if (isApproved && (!targetEmailInput.trim() || emailItem.emailStatus !== 'valid')) {
-        setError('Cannot approve draft! Target contact email must be entered and SMTP verified as valid before approval.');
+      if (isApproved && (!targetEmailInput.trim() || targetStatus !== 'valid')) {
+        setError('Cannot approve draft! Target contact email must be selected and SMTP verified as valid before approval.');
         setSaving(false);
         return;
       }
 
-      const companies = [...(leadDoc.currentCompanies ?? [])];
+      const companies = [...(currentLead.currentCompanies ?? [])];
 
-      if (companies[emailItem.companyIndex]) {
+      if (emailItem.companyIndex !== -1 && companies[emailItem.companyIndex]) {
         companies[emailItem.companyIndex].emailSubject = subjectInput;
         companies[emailItem.companyIndex].emailBody = bodyHtmlInput;
         companies[emailItem.companyIndex].approved = isApproved;
@@ -403,15 +539,21 @@ function EmailEditModal({
         }
       }
 
-      // Use verifyCompanyEmails (not addManualEmail) so the target email is SMTP-verified
-      // but NOT pushed into discoveredEmails (the personal pool) — preventing the "email
-      // disappears and reappears in another box" bug.
       const res = await updateLeadDetailsApi(emailItem.leadId, {
-        currentCompanies: companies,
-        emailSubject: companies[0]?.emailSubject ?? subjectInput,
-        emailBody: companies[0]?.emailBody ?? bodyHtmlInput,
-        approved: companies[0]?.approved ?? isApproved,
-        ...(targetEmailInput.trim() ? { verifyCompanyEmails: [targetEmailInput.trim()] } : {}),
+        ...(emailItem.companyIndex !== -1
+          ? {
+              currentCompanies: companies,
+              emailSubject: companies[0]?.emailSubject ?? subjectInput,
+              emailBody: companies[0]?.emailBody ?? bodyHtmlInput,
+              approved: companies[0]?.approved ?? isApproved,
+              ...(targetEmailInput.trim() ? { verifyCompanyEmails: [targetEmailInput.trim()] } : {}),
+            }
+          : {
+              emailSubject: subjectInput,
+              emailBody: bodyHtmlInput,
+              approved: isApproved,
+              ...(targetEmailInput.trim() ? { forceVerifyEmail: targetEmailInput.trim() } : {}),
+            }),
       });
 
       onLeadUpdated(res.result);
@@ -442,12 +584,13 @@ function EmailEditModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-xs overflow-y-auto">
-      <div className="relative w-full max-w-3xl rounded-xl bg-white p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-xs overflow-y-auto">
+      <div className="relative w-full max-w-3xl rounded-xl bg-white p-6 shadow-2xl space-y-4 max-h-[92vh] overflow-y-auto border border-slate-200">
+        {/* Header */}
         <div className="flex items-center justify-between border-b border-slate-200 pb-3">
           <div>
-            <h3 className="text-lg font-extrabold text-slate-900">
-              🏢 {emailItem.companyName} &mdash; Outreach Email
+            <h3 className="text-base font-extrabold text-slate-900 flex items-center gap-2">
+              🏢 {emailItem.companyName} &mdash; Edit & Preview Outreach
             </h3>
             <div className="text-xs text-indigo-600 font-semibold mt-0.5">
               Candidate: {emailItem.candidateName} ({emailItem.clientName})
@@ -462,28 +605,167 @@ function EmailEditModal({
           </button>
         </div>
 
+        {/* Notifications */}
         {error && (
           <div className="flex items-center gap-2 rounded-md border border-red-200 bg-red-50 p-3 text-xs text-red-700 font-semibold">
-            <AlertTriangleIcon width={14} height={14} /> {error}
+            <AlertTriangleIcon width={14} height={14} className="shrink-0 text-red-600" />
+            <div className="flex-1">{error}</div>
+          </div>
+        )}
+        {successMsg && (
+          <div className="flex items-center gap-2 rounded-md border border-green-200 bg-green-50 p-3 text-xs text-green-700 font-semibold">
+            <CheckCircleIcon width={14} height={14} className="shrink-0 text-green-600" />
+            <div className="flex-1">{successMsg}</div>
           </div>
         )}
 
         <div className="space-y-4 text-xs">
-          <div className="space-y-1">
-            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
-              Contact / Target Email (Verify & Edit)
+          {/* ── 1. DIRECT WEB CRAWLING IN MODAL ────────────────────────────── */}
+          <div className="bg-purple-50/50 border border-purple-200 rounded-lg p-3 space-y-2">
+            <label className="text-[10px] font-extrabold text-purple-900 uppercase tracking-wider flex items-center gap-1.5">
+              <GlobeIcon width={12} height={12} className="text-purple-600" />
+              Direct Website Crawling & Email Extraction
             </label>
-            <div className="flex items-center gap-2">
+            <div className="flex gap-2">
               <input
-                type="email"
-                value={targetEmailInput}
-                onChange={(e) => setTargetEmailInput(e.target.value)}
-                className="w-full text-xs font-mono font-bold text-slate-900 border border-slate-300 rounded px-3 py-2 focus:ring-1 focus:ring-indigo-500 focus:outline-none"
+                type="text"
+                placeholder="Enter company website URL (e.g. https://acme.com)..."
+                value={websiteUrlInput}
+                onChange={(e) => setWebsiteUrlInput(e.target.value)}
+                disabled={crawling}
+                className="flex-1 text-xs border border-purple-200 rounded px-3 py-1.5 focus:ring-1 focus:ring-purple-500 focus:outline-none bg-white font-mono"
               />
-              <SmtpBadge status={emailItem.emailStatus} />
+              <Button
+                type="button"
+                size="sm"
+                onClick={() => { void handleCrawlWebsiteInModal(); }}
+                disabled={crawling || !websiteUrlInput.trim()}
+                className="bg-purple-600 hover:bg-purple-700 text-white text-xs px-3 py-1.5 font-bold shrink-0 flex items-center gap-1 disabled:opacity-50"
+              >
+                {crawling ? (
+                  <>
+                    <LoaderIcon width={11} height={11} className="animate-spin" />
+                    Crawling...
+                  </>
+                ) : (
+                  <>
+                    <RefreshIcon width={11} height={11} />
+                    ⚡ Crawl & Extract Emails
+                  </>
+                )}
+              </Button>
             </div>
           </div>
 
+          {/* ── 2. CONTACT EMAILS & INLINE SMTP VERIFICATION ───────────────── */}
+          <div className="border border-slate-200 rounded-lg p-3.5 space-y-3 bg-slate-50/50">
+            <div className="flex items-center justify-between">
+              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                Target Contact Emails ({availableEmails.length} Discovered)
+              </label>
+              {targetEmailInput ? (
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[10px] font-semibold text-slate-500">Selected Target:</span>
+                  <span className="font-mono font-bold text-indigo-700 bg-white px-2 py-0.5 rounded border border-indigo-200">
+                    {targetEmailInput}
+                  </span>
+                  <SmtpBadge status={targetStatus ?? 'pending'} />
+                </div>
+              ) : (
+                <Badge tone="warning">⚠️ No Email Selected</Badge>
+              )}
+            </div>
+
+            {/* Email Radio List with Inline SMTP Verify Buttons */}
+            {availableEmails.length > 0 ? (
+              <div className="space-y-1.5 bg-white border border-slate-200 rounded-md p-2 max-h-36 overflow-y-auto">
+                {availableEmails.map((em) => {
+                  const status = verifiedMap.get(em.toLowerCase()) ?? 'pending';
+                  const isSelected = targetEmailInput.toLowerCase() === em.toLowerCase();
+                  const isVerifying = verifyingEmail === em;
+
+                  return (
+                    <div
+                      key={em}
+                      onClick={() => setTargetEmailInput(em)}
+                      className={[
+                        'flex items-center justify-between p-2 rounded-md border text-xs cursor-pointer transition-all',
+                        isSelected ? 'bg-indigo-50/80 border-indigo-300 font-bold' : 'border-slate-100 hover:bg-slate-50',
+                      ].join(' ')}
+                    >
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="radio"
+                          name="targetEmailSelection"
+                          checked={isSelected}
+                          onChange={() => setTargetEmailInput(em)}
+                          className="text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                        />
+                        <span className="font-mono text-slate-900">{em}</span>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <SmtpBadge status={status} />
+                        <button
+                          type="button"
+                          disabled={isVerifying}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void handleVerifyEmailInModal(em);
+                          }}
+                          className="flex items-center gap-1 text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded hover:bg-amber-100 transition-colors disabled:opacity-50"
+                        >
+                          {isVerifying ? (
+                            <>
+                              <LoaderIcon width={10} height={10} className="animate-spin text-amber-600" />
+                              Verifying...
+                            </>
+                          ) : (
+                            <>⚡ Verify SMTP</>
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="bg-amber-50 border border-amber-200 rounded-md p-2.5 text-xs text-amber-800 font-semibold italic flex items-center justify-between">
+                <span>No contact emails discovered yet for this entry.</span>
+                <Badge tone="warning">⚠️ No Email Found</Badge>
+              </div>
+            )}
+
+            {/* Add Multiple Emails Input Field */}
+            <div className="pt-2 border-t border-slate-200/80 space-y-1.5">
+              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">
+                Add Multiple Emails directly (Comma / Space Separated)
+              </label>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  placeholder="e.g. contact@company.com, sales@company.com"
+                  value={multipleEmailsInput}
+                  onChange={(e) => setMultipleEmailsInput(e.target.value)}
+                  disabled={saving}
+                  className="flex-1 text-xs font-mono border border-slate-300 rounded px-3 py-1.5 focus:ring-1 focus:ring-indigo-500 focus:outline-none bg-white"
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => { void handleAddMultipleEmails(); }}
+                  disabled={saving || !multipleEmailsInput.trim()}
+                  className="border-indigo-200 text-indigo-700 hover:bg-indigo-50 text-xs px-3 py-1.5 font-bold flex items-center gap-1 shrink-0"
+                >
+                  <PlusCircleIcon width={12} height={12} />
+                  + Add & Verify SMTP
+                </Button>
+              </div>
+            </div>
+          </div>
+
+          {/* Subject Line */}
           <div className="space-y-1">
             <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
               Subject Line
@@ -496,6 +778,7 @@ function EmailEditModal({
             />
           </div>
 
+          {/* WYSIWYG Editor */}
           <div className="space-y-1">
             <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
               Email HTML Body (WYSIWYG Editor)
@@ -503,6 +786,7 @@ function EmailEditModal({
             <RichTextEditor initialValue={bodyHtmlInput} onChange={setBodyHtmlInput} />
           </div>
 
+          {/* AI Refinement */}
           <div className="bg-indigo-50/50 border border-indigo-100 rounded-md p-3 space-y-2">
             <label className="text-[10px] font-bold text-indigo-600 uppercase tracking-wider block">
               AI Refinement Instruction
@@ -530,6 +814,7 @@ function EmailEditModal({
           </div>
         </div>
 
+        {/* Modal Footer */}
         <div className="flex items-center justify-between border-t border-slate-200 pt-3">
           <div className="flex items-center gap-3">
             <button
@@ -730,11 +1015,12 @@ export default function OutreachEmailsPage() {
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
-  // Server-Side Filter States: Default Approval Filter is 'all'!
+  // Server-Side & Local Filter States
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedClientId, setSelectedClientId] = useState<string>('all');
   const [approvalFilter, setApprovalFilter] = useState<'approved' | 'draft' | 'all'>('all');
   const [sendStatusFilter, setSendStatusFilter] = useState<'all' | 'no_contact_email' | 'pending' | 'in_progress' | 'delivered' | 'opened' | 'failed'>('all');
+  const [smtpFilter, setSmtpFilter] = useState<'all' | 'valid' | 'unverified' | 'invalid' | 'no_contact_email'>('all');
 
   // Server-Side Pagination State
   const [page, setPage] = useState(1);
@@ -894,7 +1180,16 @@ export default function OutreachEmailsPage() {
     }
   });
 
-  const countApprovedPendingSend = allGeneratedEmailItems.filter(
+  const filteredGeneratedEmailItems = allGeneratedEmailItems.filter(({ item }) => {
+    if (smtpFilter === 'all') return true;
+    if (smtpFilter === 'no_contact_email') return !item.targetEmail;
+    if (smtpFilter === 'valid') return Boolean(item.targetEmail && item.emailStatus === 'valid');
+    if (smtpFilter === 'unverified') return Boolean(item.targetEmail && item.emailStatus !== 'valid' && item.emailStatus !== 'invalid');
+    if (smtpFilter === 'invalid') return Boolean(item.targetEmail && item.emailStatus === 'invalid');
+    return true;
+  });
+
+  const countApprovedPendingSend = filteredGeneratedEmailItems.filter(
     ({ item }) => item.approved && (item.sendStatus === 'pending' || item.sendStatus === 'failed')
   ).length;
 
@@ -921,7 +1216,7 @@ export default function OutreachEmailsPage() {
         </div>
       )}
 
-      {/* True Server-Side Filters Bar with Custom Styled Vertical Dropdowns */}
+      {/* True Server-Side & Local Filters Bar */}
       <Card className="border border-slate-200 bg-white shadow-2xs">
         <CardContent className="py-3.5 px-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
@@ -955,13 +1250,30 @@ export default function OutreachEmailsPage() {
                     { value: 'draft', label: 'Drafts Only' },
                   ]}
                   onChange={setApprovalFilter}
-                  widthClass="w-48"
+                  widthClass="w-44"
+                />
+              </div>
+
+              {/* Custom Styled Vertical SMTP Verification Filter */}
+              <div className="flex items-center gap-1.5 text-xs text-slate-500 font-semibold">
+                <span>SMTP Status:</span>
+                <CustomSelect<'all' | 'valid' | 'unverified' | 'invalid' | 'no_contact_email'>
+                  value={smtpFilter}
+                  options={[
+                    { value: 'all', label: 'All SMTP Statuses' },
+                    { value: 'valid', label: '✓ Verified SMTP' },
+                    { value: 'unverified', label: '⚡ SMTP Not Verified' },
+                    { value: 'invalid', label: '❌ Invalid / Email Not Exist' },
+                    { value: 'no_contact_email', label: '⚠️ No Contact Email' },
+                  ]}
+                  onChange={setSmtpFilter}
+                  widthClass="w-52"
                 />
               </div>
 
               {/* Custom Styled Vertical Send Status Filter */}
               <div className="flex items-center gap-1.5 text-xs text-slate-500 font-semibold">
-                <span>Send / Contact Status:</span>
+                <span>Send Status:</span>
                 <CustomSelect<'all' | 'no_contact_email' | 'pending' | 'in_progress' | 'delivered' | 'opened' | 'failed'>
                   value={sendStatusFilter}
                   options={[
@@ -988,16 +1300,16 @@ export default function OutreachEmailsPage() {
           <LoaderIcon width={28} height={28} className="text-indigo-600 animate-spin" />
           <span className="text-sm font-semibold text-slate-500">Querying MongoDB server for outreach emails...</span>
         </div>
-      ) : allGeneratedEmailItems.length === 0 ? (
+      ) : filteredGeneratedEmailItems.length === 0 ? (
         <Card className="py-12 border-dashed border-2 border-slate-200 flex flex-col items-center justify-center text-slate-400">
           <SparklesIcon width={36} height={36} className="text-slate-300 mb-2" />
-          <div className="text-sm font-semibold text-slate-500 mb-1">No outreach emails found matching server query.</div>
+          <div className="text-sm font-semibold text-slate-500 mb-1">No outreach emails found matching filter query.</div>
           <div className="text-xs text-slate-400">Try changing your server filter dropdowns or search query above.</div>
         </Card>
       ) : (
         <>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-            {allGeneratedEmailItems.map(({ item, leadDoc }) => (
+            {filteredGeneratedEmailItems.map(({ item, leadDoc }) => (
               <CompactEmailCard
                 key={item.id}
                 emailItem={item}

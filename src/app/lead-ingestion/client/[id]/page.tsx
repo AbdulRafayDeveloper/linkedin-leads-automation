@@ -1556,13 +1556,43 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
 
             {/* Modal Content */}
             <div className="p-6 space-y-4 overflow-y-auto flex-1">
-              {/* Target Contact Email Indicator */}
-              <div className="bg-indigo-50/60 border border-indigo-100 rounded-md p-3 text-xs flex items-center justify-between">
-                <span className="font-semibold text-indigo-900">Target Contact Email:</span>
-                <span className="font-mono font-bold text-indigo-700 bg-white px-2 py-0.5 rounded border border-indigo-200">
-                  {editingDraftIndex === -1 ? (personalEmails[0] || lead?.email || 'No primary personal email set') : (companyEmailMap.get(editingDraftIndex)?.[0] || lead?.email || 'No primary email set')}
-                </span>
-              </div>
+              {/* Target Contact Email Indicator & Inline SMTP Verify */}
+              {(() => {
+                const currentEmails = editingDraftIndex === -1
+                  ? personalEmails
+                  : (companyEmailMap.get(editingDraftIndex) ?? []);
+                const primaryEmail = currentEmails[0] || (editingDraftIndex === -1 ? lead?.email : '') || '';
+                const primaryStatus = primaryEmail ? (verifiedMap.get(primaryEmail) ?? 'pending') : null;
+
+                return (
+                  <div className="border border-slate-200 bg-slate-50/60 rounded-lg p-3 space-y-2 text-xs">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold text-slate-700">Target Contact Email:</span>
+                        {primaryEmail ? (
+                          <span className="font-mono font-bold text-indigo-700 bg-white px-2 py-0.5 rounded border border-indigo-200">
+                            {primaryEmail}
+                          </span>
+                        ) : (
+                          <span className="text-amber-800 font-semibold italic">No contact email assigned</span>
+                        )}
+                        {primaryEmail ? <SmtpBadge status={primaryStatus ?? 'pending'} /> : <Badge tone="warning">⚠️ No Email Found</Badge>}
+                      </div>
+
+                      {primaryEmail && (
+                        <button
+                          type="button"
+                          onClick={() => { void handleVerifySingleEmail(primaryEmail); }}
+                          className="flex items-center gap-1 text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded hover:bg-amber-100 transition-colors"
+                          title="Re-verify SMTP status for target contact email"
+                        >
+                          ⚡ Verify SMTP
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })()}
 
               {/* Subject Line Input */}
               <div className="space-y-1">
