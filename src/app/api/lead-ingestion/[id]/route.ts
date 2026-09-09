@@ -45,13 +45,9 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       emailBody?: string;
       approved?: boolean;
       currentCompanies?: CurrentCompanyItem[];
-      // Personal email pool: adds to discoveredEmails + verifies + may update emailValidationStatus
       addManualEmail?: string;
       discoveredEmails?: string[];
-      // Force re-verify a single email by address (updates verifiedEmails; only updates
-      // emailValidationStatus if the email matches doc.email — the personal primary)
       forceVerifyEmail?: string;
-      // SMTP-verify company emails without touching discoveredEmails or emailValidationStatus
       verifyCompanyEmails?: string[];
     };
 
@@ -77,13 +73,33 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     if (body.approved !== undefined) {
       doc.approved = body.approved;
     }
+
+    // ── Company sub-boxes updates ───────────────────────────────────────────
     if (body.currentCompanies !== undefined) {
-      doc.currentCompanies = body.currentCompanies;
+      doc.currentCompanies = body.currentCompanies.map((c, idx) => {
+        const existing = doc.currentCompanies[idx];
+        const validName = c.companyName && c.companyName !== 'Unspecified Company' && c.companyName !== 'Unknown Company' ? c.companyName : null;
+        const validJob = c.jobTitle && c.jobTitle !== 'Professional' ? c.jobTitle : null;
+
+        return {
+          companyName: validName ?? existing?.companyName ?? 'Unspecified Company',
+          jobTitle: validJob ?? existing?.jobTitle ?? 'Professional',
+          workPeriod: c.workPeriod ?? existing?.workPeriod ?? null,
+          websiteUrl: c.websiteUrl ?? existing?.websiteUrl ?? null,
+          summary: c.summary ?? existing?.summary ?? '',
+          companyEmails: c.companyEmails ?? existing?.companyEmails ?? [],
+          emailSubject: c.emailSubject ?? existing?.emailSubject ?? null,
+          emailBody: c.emailBody ?? existing?.emailBody ?? null,
+          approved: c.approved ?? existing?.approved ?? false,
+        };
+      });
+      doc.markModified('currentCompanies');
+      if (doc.currentCompanies[0]?.companyName) {
+        doc.companyName = doc.currentCompanies[0].companyName;
+      }
     }
 
-    // ── Force re-verify a single email via SMTP ─────────────────────────────
-    // Updates verifiedEmails[]. Only updates emailValidationStatus if this is the
-    // personal primary email (doc.email). Does NOT touch discoveredEmails.
+    // ── Explicit single email force SMTP verification ───────────────────────
     if (body.forceVerifyEmail && body.forceVerifyEmail.trim()) {
       const emailClean = body.forceVerifyEmail.trim().toLowerCase();
       let status: VerifiedEmailItem['status'] = 'unknown';
@@ -101,70 +117,42 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
         doc.verifiedEmails.push({ email: emailClean, status });
       }
 
-      // Only update personal emailValidationStatus if this IS the personal primary email
       if (doc.email === emailClean) {
         doc.emailValidationStatus = status;
       }
     }
 
-    // ── Verify company emails (SMTP-only) ───────────────────────────────────
-    // Does NOT push to discoveredEmails. Does NOT update emailValidationStatus.
-    // Only adds/updates the verifiedEmails array for SMTP badge display.
+    // ── Register company emails (non-blocking) ─────────────────────────────
     if (body.verifyCompanyEmails && body.verifyCompanyEmails.length > 0) {
-      await Promise.all(
-        body.verifyCompanyEmails.map(async (emailRaw) => {
-          const emailClean = emailRaw.trim().toLowerCase();
-          if (!emailClean.includes('@')) return;
-
-          let status: VerifiedEmailItem['status'] = 'unknown';
-          try {
-            const verifyRes = await verifyEmailSmtp(emailClean);
-            status = verifyRes.status;
-          } catch {
-            status = 'unknown';
-          }
-
-          const existingIndex = doc.verifiedEmails.findIndex((v) => v.email === emailClean);
-          if (existingIndex !== -1) {
-            doc.verifiedEmails[existingIndex].status = status;
-          } else {
-            doc.verifiedEmails.push({ email: emailClean, status });
-          }
-        })
-      );
+      body.verifyCompanyEmails.forEach((emailRaw) => {
+        const emailClean = emailRaw.trim().toLowerCase();
+        if (!emailClean.includes('@')) return;
+        const existingIndex = doc.verifiedEmails.findIndex((v) => v.email === emailClean);
+        if (existingIndex === -1) {
+          doc.verifiedEmails.push({ email: emailClean, status: 'pending' });
+        }
+      });
     }
 
     // ── Replace discoveredEmails (personal pool) directly ───────────────────
-    // Also verifies any newly added personal emails via SMTP.
     if (body.discoveredEmails !== undefined) {
       doc.discoveredEmails = body.discoveredEmails;
       doc.email = doc.discoveredEmails.length > 0 ? doc.discoveredEmails[0] : null;
 
-      // Verify any not-yet-verified emails in the personal pool
       for (const emailClean of doc.discoveredEmails) {
         const existingIndex = doc.verifiedEmails.findIndex((v) => v.email === emailClean);
         if (existingIndex === -1) {
-          let status: VerifiedEmailItem['status'] = 'unknown';
-          try {
-            const verifyRes = await verifyEmailSmtp(emailClean);
-            status = verifyRes.status;
-          } catch {
-            status = 'unknown';
-          }
-          doc.verifiedEmails.push({ email: emailClean, status });
+          doc.verifiedEmails.push({ email: emailClean, status: 'pending' });
         }
       }
 
-      // Update personal emailValidationStatus to match the primary personal email
       if (doc.email) {
         const primaryStatus = doc.verifiedEmails.find((v) => v.email === doc.email)?.status;
         if (primaryStatus) doc.emailValidationStatus = primaryStatus;
       }
     }
 
-    // ── Add personal emails (comma-separated) ──────────────────────────────
-    // Pushes to discoveredEmails (personal pool) + SMTP verifies.
-    // Only updates emailValidationStatus when this email is the personal primary.
+    // ── Add personal emails (non-blocking fast save) ────────────────────────
     if (body.addManualEmail && body.addManualEmail.trim()) {
       const emailList = body.addManualEmail
         .split(/[,;\s]+/)
@@ -179,30 +167,21 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
           doc.email = emailClean;
         }
 
-        let status: VerifiedEmailItem['status'] = 'unknown';
-        try {
-          const verifyRes = await verifyEmailSmtp(emailClean);
-          status = verifyRes.status;
-        } catch {
-          status = 'unknown';
-        }
-
         const existingIndex = doc.verifiedEmails.findIndex((v) => v.email === emailClean);
-        if (existingIndex !== -1) {
-          doc.verifiedEmails[existingIndex].status = status;
-        } else {
-          doc.verifiedEmails.push({ email: emailClean, status });
+        if (existingIndex === -1) {
+          doc.verifiedEmails.push({ email: emailClean, status: 'pending' });
         }
 
-        // Only update personal emailValidationStatus for the personal primary email
         if (doc.email === emailClean) {
-          doc.emailValidationStatus = status;
+          const primaryStatus = doc.verifiedEmails.find((v) => v.email === doc.email)?.status;
+          if (primaryStatus) doc.emailValidationStatus = primaryStatus;
         }
       }
     }
 
     doc.markModified('currentCompanies');
     doc.markModified('verifiedEmails');
+    doc.markModified('discoveredEmails');
     const result = await doc.save();
     return jsonOk({ result });
   } catch (error) {

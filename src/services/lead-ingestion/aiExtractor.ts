@@ -1,4 +1,5 @@
 import { getFallbackChatModels } from '@/lib/ai/provider';
+import { extractAllUrls } from './regexExtractor';
 
 export interface CompanyPosition {
   companyName: string;
@@ -53,6 +54,14 @@ function cleanJson(raw: string): string {
 export async function extractWithAi(rawText: string): Promise<AiExtractedData> {
   if (!rawText?.trim()) throw new Error('Empty input');
 
+  // ── Step 0: Pre-extract URLs with regex (always reliable) ────────────────
+  // These are injected into the AI prompt so the AI always has them as context,
+  // and are merged with AI results afterwards for a guaranteed-complete list.
+  const regexUrls = extractAllUrls(rawText);
+  const regexUrlsBlock = regexUrls.length > 0
+    ? `\n\nIMPORTANT — The following URLs were pre-extracted from the text via regex. You MUST include ALL of these in "rawUrls" and map them to the correct company or mark as portfolio:\n${regexUrls.map((u, i) => `${i + 1}. ${u}`).join('\n')}`
+    : '';
+
   const prompt = `You are a LinkedIn profile parser. I will give you raw copied text from a LinkedIn Sales Navigator profile page.
 
 Your task: extract a structured JSON object. Follow these rules EXACTLY.
@@ -66,11 +75,11 @@ Your task: extract a structured JSON object. Follow these rules EXACTLY.
       "companyName": "<exact company name>",
       "jobTitle": "<exact job title at this company>",
       "workPeriod": "<e.g. Apr 2025 - Present>",
-      "websiteUrl": "<website URL for THIS specific company if mentioned in the text, else null>",
+      "websiteUrl": "<website URL for THIS specific company if mentioned in the text or pre-extracted URLs above, else null>",
       "roleSummary": "<1-2 sentence summary of what they do at this specific company>"
     }
   ],
-  "rawUrls": ["<every URL found anywhere in the text>"],
+  "rawUrls": ["<every URL found anywhere in the text — MUST include the pre-extracted URLs listed above>"],
   "rawEmails": ["<every email address found in the text>"],
   "rawPhones": ["<every phone/mobile/WhatsApp number found in the text — include country codes, spaces, dashes, parentheses exactly as written. Include ALL international formats: +1, +44, +92, +971, etc.>"]
 }
@@ -78,10 +87,10 @@ Your task: extract a structured JSON object. Follow these rules EXACTLY.
 ### RULES:
 1. "currentCompanies" must contain ONLY roles where the end date says "Present" — do NOT include past roles.
 2. Include ALL current roles, even if there are 2 or 3.
-3. For "websiteUrl" inside each company: only put a URL if the text explicitly shows a website for THAT company. Otherwise use null.
-4. "rawUrls" = every URL found anywhere in the text (contact section, bio, etc.)
+3. For "websiteUrl" inside each company: check the pre-extracted URLs first; assign any URL whose domain matches the company name. Otherwise use null.
+4. "rawUrls" = every URL found anywhere in the text (contact section, bio, etc.) PLUS all pre-extracted URLs.
 5. "rawPhones" = extract ALL phone numbers regardless of country or format. Do not filter or validate them.
-6. Return valid JSON only. No markdown fences, no explanation text.
+6. Return valid JSON only. No markdown fences, no explanation text.${regexUrlsBlock}
 
 ### RAW TEXT:
 """
@@ -104,25 +113,69 @@ ${rawText}
       const fullName = str(p.fullName);
       const personSummary = str(p.personSummary) ?? 'Candidate profile extracted.';
 
-      // Parse currentCompanies array
-      const rawList = Array.isArray(p.currentCompanies) ? p.currentCompanies : [];
+      // Parse currentCompanies array from any variation key or single object
+      const rawRawList =
+        p.currentCompanies ??
+        p.companies ??
+        p.current_companies ??
+        p.positions ??
+        p.roles ??
+        p.currentCompany ??
+        p.company ??
+        p.current_company;
+
+      const rawList = Array.isArray(rawRawList)
+        ? rawRawList
+        : (rawRawList && typeof rawRawList === 'object' ? [rawRawList] : []);
+
       const currentCompanies: CompanyPosition[] = rawList
         .filter((item): item is Record<string, unknown> => !!item && typeof item === 'object')
         .map((item) => ({
-          companyName: str(item.companyName) ?? 'Unknown Company',
-          jobTitle: str(item.jobTitle) ?? 'Professional',
-          workPeriod: str(item.workPeriod),
-          websiteUrl: str(item.websiteUrl),
-          roleSummary: str(item.roleSummary) ?? '',
+          companyName:
+            str(
+              item.companyName ??
+                item.company ??
+                item.company_name ??
+                item.organization ??
+                item.name ??
+                item.title
+            ) ?? 'Unknown Company',
+          jobTitle:
+            str(item.jobTitle ?? item.title ?? item.position ?? item.role) ??
+            'Professional',
+          workPeriod: str(item.workPeriod ?? item.period ?? item.duration ?? item.dates),
+          websiteUrl: str(item.websiteUrl ?? item.url ?? item.website),
+          roleSummary: str(item.roleSummary ?? item.summary ?? item.description) ?? '',
         }));
 
-      // Fallback: if AI returned 0 companies but returned top-level fields
+      // Fallback: if AI returned 0 companies in array but returned top-level fields or objects
       if (currentCompanies.length === 0) {
+        const topCompObj =
+          (typeof p.currentCompany === 'object' && p.currentCompany ? (p.currentCompany as Record<string, unknown>) : null) ??
+          (typeof p.company === 'object' && p.company ? (p.company as Record<string, unknown>) : null);
+
+        const extractedName =
+          str(
+            p.companyName ??
+              p.company ??
+              p.company_name ??
+              p.organization ??
+              (topCompObj ? topCompObj.companyName ?? topCompObj.company ?? topCompObj.name : null)
+          ) ?? 'Unspecified Company';
+
+        const extractedJob =
+          str(
+            p.jobTitle ??
+              p.title ??
+              p.position ??
+              (topCompObj ? topCompObj.jobTitle ?? topCompObj.title ?? topCompObj.role : null)
+          ) ?? 'Professional';
+
         currentCompanies.push({
-          companyName: str(p.companyName) ?? 'Unspecified Company',
-          jobTitle: str(p.jobTitle) ?? 'Professional',
-          workPeriod: str(p.workPeriod),
-          websiteUrl: str(p.websiteUrl),
+          companyName: extractedName,
+          jobTitle: extractedJob,
+          workPeriod: str(p.workPeriod ?? (topCompObj ? topCompObj.workPeriod : null)),
+          websiteUrl: str(p.websiteUrl ?? (topCompObj ? topCompObj.websiteUrl : null)),
           roleSummary: personSummary,
         });
       }
@@ -137,7 +190,13 @@ ${rawText}
         ? (p.rawPhones.map(str).filter(Boolean) as string[])
         : [];
 
-      return { fullName, personSummary, currentCompanies, rawUrls, rawEmails, rawPhones };
+      // Merge AI rawUrls with regex pre-extracted URLs for guaranteed completeness
+      const mergedUrls = Array.from(new Set([
+        ...rawUrls,
+        ...regexUrls,
+      ]));
+
+      return { fullName, personSummary, currentCompanies, rawUrls: mergedUrls, rawEmails, rawPhones };
     } catch (err) {
       errors.push(err instanceof Error ? err.message : String(err));
     }
@@ -152,14 +211,15 @@ ${rawText}
     personSummary: 'LinkedIn profile data extracted via regex fallback.',
     currentCompanies: [
       {
-        companyName: 'Unspecified Company',
-        jobTitle: 'Professional',
+        companyName: reg.companyName ?? 'Extracted Company',
+        jobTitle: reg.jobTitle ?? 'Professional',
         workPeriod: null,
         websiteUrl: reg.websiteUrl,
         roleSummary: '',
       },
     ],
-    rawUrls: reg.websiteUrl ? [reg.websiteUrl] : [],
+    // Use full regex URL list in fallback
+    rawUrls: reg.allUrls ?? (reg.websiteUrl ? [reg.websiteUrl] : []),
     rawEmails: reg.email ? [reg.email] : [],
     // Phone extraction is AI-only — regex cannot reliably handle all international formats
     rawPhones: [],
@@ -240,8 +300,11 @@ Rules:
       for (const url of rawUrls) {
         const alreadyAssigned =
           portfolioUrl === url || updated.some((c) => c.websiteUrl === url);
-        if (!alreadyAssigned && updated[0] && !updated[0].websiteUrl) {
-          updated[0].websiteUrl = url;
+        if (!alreadyAssigned) {
+          const compWithoutUrl = updated.find((c) => !c.websiteUrl);
+          if (compWithoutUrl) {
+            compWithoutUrl.websiteUrl = url;
+          }
         }
       }
 
@@ -251,9 +314,12 @@ Rules:
     }
   }
 
-  // Hard fallback: assign first URL to first company
-  if (rawUrls.length > 0 && updated[0] && !updated[0].websiteUrl) {
-    updated[0].websiteUrl = rawUrls[0];
+  // Hard fallback: assign first URL to first company missing a website URL
+  if (rawUrls.length > 0) {
+    const compWithoutUrl = updated.find((c) => !c.websiteUrl) ?? updated[0];
+    if (compWithoutUrl && !compWithoutUrl.websiteUrl) {
+      compWithoutUrl.websiteUrl = rawUrls[0];
+    }
   }
   return { companies: updated, portfolioUrl };
 }

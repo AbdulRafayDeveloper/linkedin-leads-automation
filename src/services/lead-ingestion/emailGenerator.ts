@@ -154,7 +154,9 @@ export async function generateLeadEmail(
         continue;
       }
 
-      const compSummary = `${doc.summary || ''} | Company: ${comp.companyName} (${comp.jobTitle})`;
+      const compName = comp.companyName || 'Company';
+      const compJob = comp.jobTitle || 'Professional';
+      const compSummary = `${doc.summary || ''} | Company: ${compName} (${compJob})`;
       const prompt = buildOutreachPrompt(firstName, compSummary, comp.websiteUrl, activeSender, userPrompt, globalPromptText);
 
       for (const model of candidateModels) {
@@ -173,9 +175,13 @@ export async function generateLeadEmail(
           const cleanBody = ensureStartsWithFirstNameHtml(parsed.body, firstName);
           const signatureHtml = `<p>${formatSenderSignature(activeSender).replace(/\n/g, '<br />')}</p>`;
 
-          comp.emailSubject = subject;
-          comp.emailBody = `${cleanBody}\n\n${signatureHtml}`;
-          comp.approved = false;
+          const targetComp = doc.currentCompanies[i];
+          if (targetComp) {
+            targetComp.emailSubject = subject;
+            targetComp.emailBody = `${cleanBody}\n\n${signatureHtml}`;
+            targetComp.approved = false;
+            doc.markModified('currentCompanies');
+          }
           break;
         } catch {
           // try next model

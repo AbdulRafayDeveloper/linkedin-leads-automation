@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, use } from 'react';
+import { useEffect, useState, use, useRef } from 'react';
 import Link from 'next/link';
 import {
   crawlLeadWebsiteApi,
@@ -45,7 +45,18 @@ interface PipelineState {
   finalLead: LeadIngestionRecord | null;
 }
 
-// ── Helper: read SSE stream ───────────────────────────────────────────────────
+interface ToastMessage {
+  id: string;
+  type: 'success' | 'error' | 'info';
+  message: string;
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+const EMAIL_REGEX = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+function isValidEmail(email: string): boolean {
+  return EMAIL_REGEX.test(email.trim().toLowerCase());
+}
 
 async function readStream(
   body: ReadableStream<Uint8Array>,
@@ -73,7 +84,7 @@ async function readStream(
   }
 }
 
-// ── Helper: Strict Email Deduplication Across Sub-Boxes ───────────────────────
+// ── Helper: Robust Email Categorization & Remapping ────────────────────────────
 
 const PERSONAL_PROVIDER_DOMAINS = new Set([
   'gmail.com', 'googlemail.com', 'outlook.com', 'hotmail.com',
@@ -83,7 +94,8 @@ const PERSONAL_PROVIDER_DOMAINS = new Set([
 
 function getCategorizedEmails(
   companies: CurrentCompanyItem[],
-  allDiscoveredEmails: string[],
+  explicitDiscoveredEmails: string[],
+  crawledEmails: string[] = [],
   portfolioUrl?: string | null
 ) {
   const companyEmailMap = new Map<number, string[]>();
@@ -102,14 +114,13 @@ function getCategorizedEmails(
     }
   }
 
-  // 1. Explicitly assigned companyEmails on each company object
+  // 1. Explicitly assigned companyEmails on each company object (highest precedence for company boxes)
   companies.forEach((comp, idx) => {
     const explicit = (comp.companyEmails ?? []).map((e) => e.toLowerCase().trim()).filter(Boolean);
     const validCompanyEmails: string[] = [];
 
     explicit.forEach((e) => {
-      const dom = getDomain(e);
-      if (!PERSONAL_PROVIDER_DOMAINS.has(dom) && !assignedSet.has(e)) {
+      if (!assignedSet.has(e)) {
         validCompanyEmails.push(e);
         assignedSet.add(e);
       }
@@ -117,8 +128,17 @@ function getCategorizedEmails(
     companyEmailMap.set(idx, validCompanyEmails);
   });
 
-  // 2. Classify all discovered emails
-  allDiscoveredEmails.forEach((rawEmail) => {
+  // 2. Explicitly assigned personal discoveredEmails (highest precedence for personal profile box)
+  explicitDiscoveredEmails.forEach((rawEmail) => {
+    const email = rawEmail.toLowerCase().trim();
+    if (email && !assignedSet.has(email)) {
+      personalEmailsSet.add(email);
+      assignedSet.add(email);
+    }
+  });
+
+  // 3. Classify unassigned crawled emails (discovery fallback for remaining emails)
+  crawledEmails.forEach((rawEmail) => {
     const email = rawEmail.toLowerCase().trim();
     if (!email || assignedSet.has(email)) return;
 
@@ -157,7 +177,7 @@ function getCategorizedEmails(
         }
       }
 
-      // C2. Company Name slug match (e.g. HSQ Solution -> hsqsolution vs hsqsolution.site)
+      // C2. Company Name slug match
       if (matchedIdx === -1 && comp.companyName) {
         const compSlug = getSlug(comp.companyName);
         const domainSlug = getSlug(domain.split('.')[0] || '');
@@ -176,7 +196,7 @@ function getCategorizedEmails(
       return;
     }
 
-    // D. If company email (custom domain) did not match a specific company, assign to first company if available
+    // D. If custom domain email did not match a specific company, assign to first company if available, else personal
     if (companies.length > 0) {
       const existing = companyEmailMap.get(0) ?? [];
       if (!existing.includes(email)) {
@@ -184,7 +204,6 @@ function getCategorizedEmails(
       }
       assignedSet.add(email);
     } else {
-      // No companies exist at all, store under personal
       personalEmailsSet.add(email);
       assignedSet.add(email);
     }
@@ -198,8 +217,8 @@ function getCategorizedEmails(
 
 function SmtpBadge({ status }: { status: VerifiedEmailItem['status'] }) {
   if (status === 'valid') return <Badge tone="success">✓ Verified SMTP</Badge>;
+  if (status === 'risky') return <Badge tone="success">⚡ Risky/Catch-All SMTP</Badge>;
   if (status === 'invalid') return <Badge tone="danger">❌ Email Not Exist</Badge>;
-  if (status === 'risky') return <Badge tone="warning">⚠️ Risky SMTP</Badge>;
   return <Badge tone="warning">⚡ SMTP Not Verified</Badge>;
 }
 
@@ -247,6 +266,251 @@ function PhaseSteps({ phase, running }: { phase: 1 | 2 | 3 | 4 | 5 | 'done'; run
   );
 }
 
+function InlineRichDraftEditor({
+  initialSubject,
+  initialBody,
+  smtpStatus,
+  hasEmail,
+  isSaving,
+  isRegenerating,
+  isRewriting,
+  isApproved,
+  aiPromptValue,
+  title,
+  themeColor = 'blue',
+  onSave,
+  onRegenerate,
+  onToggleApprove,
+  onAiPromptChange,
+  onAiRefine,
+}: {
+  initialSubject: string;
+  initialBody: string;
+  smtpStatus: string | null;
+  hasEmail: boolean;
+  isSaving: boolean;
+  isRegenerating: boolean;
+  isRewriting: boolean;
+  isApproved: boolean;
+  aiPromptValue: string;
+  title: string;
+  themeColor?: 'blue' | 'indigo' | 'purple';
+  onSave: (subject: string, body: string) => Promise<void>;
+  onRegenerate: () => Promise<void>;
+  onToggleApprove: () => Promise<void>;
+  onAiPromptChange: (val: string) => void;
+  onAiRefine: () => Promise<void>;
+}) {
+  const [subject, setSubject] = useState(initialSubject || '');
+  const [body, setBody] = useState(initialBody || '');
+  const [mode, setMode] = useState<'visual' | 'code'>('visual');
+  const editorRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    setSubject(initialSubject || '');
+  }, [initialSubject]);
+
+  useEffect(() => {
+    setBody(initialBody || '');
+    if (editorRef.current && document.activeElement !== editorRef.current) {
+      editorRef.current.innerHTML = initialBody || '';
+    }
+  }, [initialBody]);
+
+  const applyFormat = (command: string, value: string | undefined = undefined) => {
+    if (mode === 'visual' && editorRef.current) {
+      editorRef.current.focus();
+      document.execCommand(command, false, value);
+      setBody(editorRef.current.innerHTML);
+    } else {
+      if (command === 'bold') setBody((prev) => prev + ' <strong>bold text</strong>');
+      else if (command === 'italic') setBody((prev) => prev + ' <em>italic text</em>');
+      else if (command === 'underline') setBody((prev) => prev + ' <u>underlined text</u>');
+      else if (command === 'paragraph') setBody((prev) => prev + '\n<p>New paragraph...</p>');
+      else if (command === 'link') setBody((prev) => prev + ' <a href="https://">Link</a>');
+    }
+  };
+
+  const norm = (str?: string | null) => (str || '').trim();
+  const isDirty = norm(subject) !== norm(initialSubject) || norm(body) !== norm(initialBody);
+
+  return (
+    <div className={`border border-${themeColor}-200 bg-white rounded-md p-3.5 space-y-3 mt-3 shadow-2xs`}>
+      {/* Header bar */}
+      <div className="flex flex-wrap items-center justify-between border-b border-slate-100 pb-2 gap-2">
+        <div className="flex items-center gap-2">
+          <span className={`text-xs font-extrabold text-${themeColor}-950 flex items-center gap-1.5`}>
+            <SparklesIcon width={13} height={13} className={`text-${themeColor}-500`} />
+            {title}
+          </span>
+          {!hasEmail ? <Badge tone="warning">⚠️ No Email Found</Badge> : <SmtpBadge status={(smtpStatus as any) ?? 'pending'} />}
+        </div>
+
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={isRegenerating}
+            onClick={() => void onRegenerate()}
+            className={`text-[10px] px-2.5 py-0.5 border-${themeColor}-200 text-${themeColor}-700 hover:bg-${themeColor}-50 flex items-center gap-1 font-semibold disabled:opacity-40`}
+          >
+            {isRegenerating ? (
+              <><LoaderIcon width={11} height={11} className="animate-spin" /> Generating...</>
+            ) : (
+              <><SparklesIcon width={11} height={11} /> ✨ Regenerate</>
+            )}
+          </Button>
+
+          {(isDirty || isSaving) && (
+            <Button
+              size="sm"
+              disabled={isSaving}
+              onClick={async () => {
+                await onSave(subject, body);
+              }}
+              className="text-[10px] px-3 py-0.5 font-bold flex items-center gap-1 bg-purple-600 hover:bg-purple-700 text-white shadow-md animate-pulse transition-all disabled:opacity-50"
+            >
+              {isSaving ? <LoaderIcon width={10} height={10} className="animate-spin" /> : <CheckCircleIcon width={10} height={10} />}
+              Save Changes
+            </Button>
+          )}
+
+          <Button
+            size="sm"
+            variant={isApproved ? 'primary' : 'outline'}
+            onClick={() => void onToggleApprove()}
+            className={[
+              'text-[10px] px-2.5 py-0.5 font-bold transition-all',
+              isApproved ? 'bg-green-600 hover:bg-green-700 text-white border-green-600' : 'border-slate-300 text-slate-600 hover:bg-slate-50',
+            ].join(' ')}
+          >
+            {isApproved ? '✓ Approved' : 'Approve'}
+          </Button>
+        </div>
+      </div>
+
+      {/* Editable Subject & Direct Rich Editor */}
+      <div className="space-y-2">
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-bold text-slate-600 shrink-0">Subject:</span>
+          <input
+            type="text"
+            value={subject}
+            onChange={(e) => setSubject(e.target.value)}
+            placeholder="Type outreach email subject line here..."
+            className="flex-1 text-xs font-semibold border border-slate-200 rounded px-2.5 py-1.5 focus:ring-1 focus:ring-indigo-500 focus:outline-none bg-slate-50/50 focus:bg-white"
+          />
+        </div>
+
+        {/* Toolbar & Mode Switcher */}
+        <div className="flex items-center justify-between bg-slate-50 px-2 py-1 rounded-t-md border border-slate-200 border-b-0 text-xs">
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => applyFormat('bold')}
+              className="px-2 py-0.5 rounded border border-slate-300 text-slate-700 hover:bg-slate-200 font-bold text-[11px]"
+              title="Bold"
+            >
+              B
+            </button>
+            <button
+              type="button"
+              onClick={() => applyFormat('italic')}
+              className="px-2 py-0.5 rounded border border-slate-300 text-slate-700 hover:bg-slate-200 italic font-semibold text-[11px]"
+              title="Italic"
+            >
+              I
+            </button>
+            <button
+              type="button"
+              onClick={() => applyFormat('underline')}
+              className="px-2 py-0.5 rounded border border-slate-300 text-slate-700 hover:bg-slate-200 underline font-semibold text-[11px]"
+              title="Underline"
+            >
+              U
+            </button>
+            <span className="text-slate-300 mx-1">|</span>
+            <button
+              type="button"
+              onClick={() => applyFormat('paragraph')}
+              className="px-2 py-0.5 rounded border border-slate-300 text-slate-700 hover:bg-slate-200 font-semibold text-[10px]"
+              title="Add Paragraph"
+            >
+              + ¶
+            </button>
+            <button
+              type="button"
+              onClick={() => applyFormat('link')}
+              className="px-2 py-0.5 rounded border border-slate-300 text-slate-700 hover:bg-slate-200 font-semibold text-[10px]"
+              title="Add Link"
+            >
+              + Link
+            </button>
+          </div>
+
+          <div className="flex items-center gap-1 text-[10px]">
+            <button
+              type="button"
+              onClick={() => setMode('visual')}
+              className={`px-2 py-0.5 rounded font-bold transition-all ${mode === 'visual' ? 'bg-white text-indigo-700 border border-slate-300 shadow-2xs' : 'text-slate-500 hover:text-slate-800'}`}
+            >
+              Visual Rich Editor
+            </button>
+            <button
+              type="button"
+              onClick={() => setMode('code')}
+              className={`px-2 py-0.5 rounded font-bold transition-all ${mode === 'code' ? 'bg-white text-indigo-700 border border-slate-300 shadow-2xs' : 'text-slate-500 hover:text-slate-800'}`}
+            >
+              HTML Code
+            </button>
+          </div>
+        </div>
+
+        {/* Directly Editable Body Box */}
+        {mode === 'visual' ? (
+          <div
+            ref={editorRef}
+            contentEditable
+            suppressContentEditableWarning
+            onInput={(e) => setBody(e.currentTarget.innerHTML)}
+            onBlur={(e) => setBody(e.currentTarget.innerHTML)}
+            className="w-full text-xs text-slate-800 leading-relaxed min-h-[160px] p-3.5 border border-slate-300 rounded-b-md focus:ring-2 focus:ring-indigo-500 focus:outline-none bg-white prose prose-slate max-w-none cursor-text"
+          />
+        ) : (
+          <textarea
+            rows={8}
+            value={body}
+            onChange={(e) => setBody(e.target.value)}
+            className="w-full text-xs font-mono border border-slate-300 rounded-b-md p-3 focus:ring-2 focus:ring-indigo-500 focus:outline-none bg-slate-900 text-slate-100"
+            placeholder="<p>Hi Firstname,</p>..."
+          />
+        )}
+      </div>
+
+      {/* AI Refine Assistant */}
+      <div className="flex items-center gap-2 pt-2 border-t border-slate-100">
+        <input
+          type="text"
+          placeholder="Ask AI to refine (e.g. 'Make it shorter')..."
+          value={aiPromptValue}
+          onChange={(e) => onAiPromptChange(e.target.value)}
+          disabled={isRewriting}
+          className="text-xs border border-purple-200 rounded-md px-3 py-1.5 flex-1 bg-purple-50/30 focus:bg-white focus:ring-1 focus:ring-purple-500 focus:outline-none"
+        />
+        <Button
+          size="sm"
+          onClick={() => void onAiRefine()}
+          disabled={isRewriting || !aiPromptValue.trim()}
+          className="bg-purple-600 hover:bg-purple-700 text-white text-[11px] px-3 py-1 font-semibold shrink-0 flex items-center gap-1 disabled:opacity-50"
+        >
+          {isRewriting ? <LoaderIcon width={10} height={10} className="animate-spin" /> : <SparklesIcon width={10} height={10} />}
+          Refine with AI
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 interface ClientPageProps {
   params: Promise<{ id: string }>;
 }
@@ -257,7 +521,21 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
   const [lead, setLead] = useState<LeadIngestionRecord | null>(null);
   const [pipeline, setPipeline] = useState<PipelineState | null>(null);
   const [loading, setLoading] = useState(true);
-  const [pageError, setPageError] = useState<string | null>(null);
+
+  // ── Toast Notification State ───────────────────────────────────────────────
+  const [toasts, setToasts] = useState<ToastMessage[]>([]);
+
+  const showToast = (message: string, type: 'success' | 'error' | 'info' = 'error') => {
+    const toastId = Math.random().toString(36).substring(2, 9);
+    setToasts((prev) => [...prev, { id: toastId, type, message }]);
+    setTimeout(() => {
+      setToasts((prev) => prev.filter((t) => t.id !== toastId));
+    }, 4500);
+  };
+
+  const removeToast = (toastId: string) => {
+    setToasts((prev) => prev.filter((t) => t.id !== toastId));
+  };
 
   // URL State Management
   const [editingWebIndex, setEditingWebIndex] = useState<number | null>(null);
@@ -271,26 +549,29 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
   // Single-Email SMTP Verification State
   const [verifyingEmailMap, setVerifyingEmailMap] = useState<Record<string, boolean>>({});
 
-  // Email Editors (Comma-Separated String state)
-  const [editingCompanyEmailIndex, setEditingCompanyEmailIndex] = useState<number | null>(null);
-  const [companyEmailsInput, setCompanyEmailsInput] = useState('');
-  const [savingCompanyEmails, setSavingCompanyEmails] = useState(false);
+  // Per-email remap loading state (key = email string)
+  const [remapLoadingMap, setRemapLoadingMap] = useState<Record<string, boolean>>({});
 
-  const [editingPersonalEmails, setEditingPersonalEmails] = useState(false);
-  const [personalEmailsInput, setPersonalEmailsInput] = useState('');
-  const [savingPersonalEmails, setSavingPersonalEmails] = useState(false);
-
-  // Draft Editor Modal State
-  const [editingDraftIndex, setEditingDraftIndex] = useState<number | null>(null);
-  const [draftSubjectInput, setDraftSubjectInput] = useState('');
-  const [draftBodyInput, setDraftBodyInput] = useState('');
+  // ── Inline draft editing (per box index; -1 = personal) ────────────────────
+  const [inlineEditingIndex, setInlineEditingIndex] = useState<number | null>(null);
+  const [inlineSubject, setInlineSubject] = useState('');
+  const [inlineBody, setInlineBody] = useState('');
   const [savingDraftIndex, setSavingDraftIndex] = useState<number | null>(null);
   const [regeneratingCompIndex, setRegeneratingCompIndex] = useState<number | null>(null);
-  
-  // Modal Mode & AI Prompt
-  const [editorTab, setEditorTab] = useState<'visual' | 'code'>('visual');
-  const [aiRewritePrompt, setAiRewritePrompt] = useState('');
-  const [rewritingAi, setRewritingAi] = useState(false);
+  const [boxAiPrompts, setBoxAiPrompts] = useState<Record<number, string>>({});
+  const [rewritingAiIndex, setRewritingAiIndex] = useState<number | null>(null);
+
+  // ── Per-email add / inline-edit state ────────────────────────────────
+  // addingEmailBox: 'personal' | '0' | '1' etc
+  const [addingEmailBox, setAddingEmailBox] = useState<string | null>(null);
+  const [addingEmailValue, setAddingEmailValue] = useState('');
+  const [addingEmailLoading, setAddingEmailLoading] = useState(false);
+
+  // inline edit per email: key = email string
+  const [editingEmailKey, setEditingEmailKey] = useState<string | null>(null);
+  const [editingEmailValue, setEditingEmailValue] = useState('');
+  const [editingEmailLoading, setEditingEmailLoading] = useState(false);
+  const [deletingEmailKey, setDeletingEmailKey] = useState<string | null>(null);
 
   async function callPhase(
     phase: 'extract' | 'map' | 'crawl' | 'verify' | 'generate',
@@ -327,7 +608,7 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
           }
         }
       } catch (err) {
-        if (isMounted) setPageError(err instanceof Error ? err.message : 'Failed to load candidate');
+        if (isMounted) showToast(err instanceof Error ? err.message : 'Failed to load candidate', 'error');
       } finally {
         if (isMounted) setLoading(false);
       }
@@ -411,6 +692,7 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
 
         if (finalLead) setLead(finalLead);
         setPipeline((prev) => prev ? ({ ...prev, running: false, phase: 'done', finalLead }) : null);
+        showToast('Auto Pipeline completed successfully!', 'success');
 
       } else {
         // No websites to crawl — skip directly to verify & generate
@@ -429,9 +711,12 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
 
         if (finalLead) setLead(finalLead);
         setPipeline((prev) => prev ? ({ ...prev, running: false, phase: 'done', finalLead }) : null);
+        showToast('Auto Pipeline completed successfully!', 'success');
       }
     } catch (err) {
-      setPipeline((p) => p ? ({ ...p, running: false, error: err instanceof Error ? err.message : 'Pipeline failed' }) : null);
+      const errMsg = err instanceof Error ? err.message : 'Pipeline failed';
+      setPipeline((p) => p ? ({ ...p, running: false, error: errMsg }) : null);
+      showToast(errMsg, 'error');
     }
   };
 
@@ -439,73 +724,157 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
   const handleVerifySingleEmail = async (emailToVerify: string) => {
     if (!id || !emailToVerify) return;
     setVerifyingEmailMap((prev) => ({ ...prev, [emailToVerify]: true }));
-    setPageError(null);
     try {
       const res = await updateLeadDetailsApi(id, { forceVerifyEmail: emailToVerify });
       setLead(res.result);
+      showToast(`SMTP verification complete for ${emailToVerify}`, 'success');
     } catch (e) {
-      setPageError(e instanceof Error ? e.message : `Failed to verify SMTP for ${emailToVerify}`);
+      showToast(e instanceof Error ? e.message : `Failed to verify SMTP for ${emailToVerify}`, 'error');
     } finally {
       setVerifyingEmailMap((prev) => ({ ...prev, [emailToVerify]: false }));
     }
   };
 
-  // ── Email Remapping Handler Across Containers ───────────────────────────────
-  const handleRemapEmail = async (
-    email: string,
-    fromContainer: 'personal' | number,
-    toContainer: 'personal' | number
-  ) => {
+  // ── Add Personal Email with Systematic De-duplication Across Containers ─────
+  const handleAddPersonalEmail = async () => {
+    const rawVal = addingEmailValue.trim().toLowerCase();
     if (!id) return;
-    setPageError(null);
+
+    if (!isValidEmail(rawVal)) {
+      showToast(`"${rawVal || 'Empty'}" is not a valid email address! (e.g. name@domain.com)`, 'error');
+      return;
+    }
+
+    setAddingEmailLoading(true);
     try {
-      const targetEmail = email.toLowerCase().trim();
-      const updatedCompanies = companies.map((c) => ({
-        ...c,
-        companyEmails: [...(c.companyEmails ?? [])],
+      // Clean rawVal out of all company email arrays to prevent duplicates
+      const updatedCompanies = companies.map((comp) => ({
+        ...comp,
+        companyEmails: (comp.companyEmails ?? []).filter((e) => e.toLowerCase() !== rawVal),
       }));
 
-      let updatedDiscovered = [...(lead?.discoveredEmails ?? [])];
+      const existingDiscovered = Array.from(
+        new Set([
+          ...(lead?.discoveredEmails ?? []).filter((e) => e.toLowerCase() !== rawVal),
+          rawVal,
+        ])
+      );
 
-      // Remove from source container
-      if (fromContainer === 'personal') {
-        updatedDiscovered = updatedDiscovered.filter((e) => e.toLowerCase() !== targetEmail);
-      } else {
-        const comp = updatedCompanies[fromContainer];
-        if (comp) {
-          comp.companyEmails = (comp.companyEmails ?? []).filter((e) => e.toLowerCase() !== targetEmail);
-        }
-      }
+      const res = await updateLeadDetailsApi(id, {
+        currentCompanies: updatedCompanies,
+        discoveredEmails: existingDiscovered,
+      });
+      setLead(res.result);
+      setAddingEmailBox(null);
+      setAddingEmailValue('');
+      showToast(`Added ${rawVal} to Personal Profile! Verifying SMTP...`, 'success');
 
-      // Add to target container
-      if (toContainer === 'personal') {
-        if (!updatedDiscovered.some((e) => e.toLowerCase() === targetEmail)) {
-          updatedDiscovered.push(targetEmail);
-        }
-      } else {
-        const comp = updatedCompanies[toContainer];
-        if (comp) {
-          const existing = comp.companyEmails ?? [];
-          if (!existing.some((e) => e.toLowerCase() === targetEmail)) {
-            comp.companyEmails = [...existing, targetEmail];
-          }
-        }
-      }
+      // Background SMTP Verification
+      void handleVerifySingleEmail(rawVal);
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : 'Failed to add personal email', 'error');
+    } finally {
+      setAddingEmailLoading(false);
+    }
+  };
+
+  // ── Add Company Email with Systematic De-duplication Across Containers ─────
+  const handleAddCompanyEmail = async (companyIndex: number) => {
+    const rawVal = addingEmailValue.trim().toLowerCase();
+    if (!id) return;
+
+    if (!isValidEmail(rawVal)) {
+      showToast(`"${rawVal || 'Empty'}" is not a valid email address! (e.g. contact@company.com)`, 'error');
+      return;
+    }
+
+    setAddingEmailLoading(true);
+    try {
+      // Clean rawVal out of discoveredEmails
+      const updatedDiscovered = (lead?.discoveredEmails ?? []).filter((e) => e.toLowerCase() !== rawVal);
+
+      // Clean rawVal out of all other company email arrays, add to targeted companyIndex
+      const updatedCompanies = companies.map((comp, idx) =>
+        idx === companyIndex
+          ? {
+              ...comp,
+              companyEmails: Array.from(new Set([...(comp.companyEmails ?? []).filter((e) => e.toLowerCase() !== rawVal), rawVal])),
+            }
+          : {
+              ...comp,
+              companyEmails: (comp.companyEmails ?? []).filter((e) => e.toLowerCase() !== rawVal),
+            }
+      );
 
       const res = await updateLeadDetailsApi(id, {
         currentCompanies: updatedCompanies,
         discoveredEmails: updatedDiscovered,
       });
       setLead(res.result);
+      setAddingEmailBox(null);
+      setAddingEmailValue('');
+      showToast(`Added ${rawVal} to company! Verifying SMTP...`, 'success');
+
+      // Background SMTP Verification
+      void handleVerifySingleEmail(rawVal);
     } catch (e) {
-      setPageError(e instanceof Error ? e.message : 'Failed to remap email address');
+      showToast(e instanceof Error ? e.message : 'Failed to add company email', 'error');
+    } finally {
+      setAddingEmailLoading(false);
+    }
+  };
+
+  // ── Email Remapping Handler Across Containers (Fixes Email Movement Glitch) ─
+  const handleRemapEmail = async (
+    email: string,
+    fromContainer: 'personal' | number,
+    toContainer: 'personal' | number
+  ) => {
+    if (!id) return;
+    setRemapLoadingMap((prev) => ({ ...prev, [email]: true }));
+    try {
+      const targetEmail = email.toLowerCase().trim();
+
+      // 1. Purge targetEmail out of ALL company email arrays
+      const updatedCompanies = companies.map((c) => ({
+        ...c,
+        companyEmails: (c.companyEmails ?? []).filter((e) => e.toLowerCase() !== targetEmail),
+      }));
+
+      // 2. Purge targetEmail out of personal discoveredEmails
+      let updatedDiscovered = (lead?.discoveredEmails ?? []).filter((e) => e.toLowerCase() !== targetEmail);
+
+      // 3. Add to requested target container
+      if (toContainer === 'personal') {
+        if (!updatedDiscovered.some((e) => e.toLowerCase() === targetEmail)) {
+          updatedDiscovered.push(targetEmail);
+        }
+      } else {
+        const targetComp = updatedCompanies[toContainer];
+        if (targetComp) {
+          if (!targetComp.companyEmails.some((e) => e.toLowerCase() === targetEmail)) {
+            targetComp.companyEmails.push(targetEmail);
+          }
+        }
+      }
+
+      // 4. Save updated containers to DB
+      const res = await updateLeadDetailsApi(id, {
+        currentCompanies: updatedCompanies,
+        discoveredEmails: updatedDiscovered,
+      });
+      setLead(res.result);
+      showToast(`Moved ${targetEmail} successfully!`, 'success');
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : 'Failed to remap email address', 'error');
+    } finally {
+      setRemapLoadingMap((prev) => ({ ...prev, [email]: false }));
     }
   };
 
   const handleCompanyCrawl = async (companyIndex: number, newUrl: string) => {
     if (!newUrl.trim() || !id) return;
     setCrawlingCompIndex(companyIndex);
-    setPageError(null);
     try {
       const updatedCompanies = [...companies];
       updatedCompanies[companyIndex] = {
@@ -518,14 +887,13 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
         websiteUrl: updatedCompanies[0]?.websiteUrl ?? lead?.websiteUrl,
       });
 
-      // Pass companyIndex so the crawl service assigns discovered emails
-      // directly to this company's companyEmails, not the personal pool.
       const crawlRes = await crawlLeadWebsiteApi(id, newUrl.trim(), [], companyIndex);
       setLead(crawlRes.result);
       setEditingWebIndex(null);
       setCustomWebInput('');
+      showToast('Website saved and crawled! Contact emails updated.', 'success');
     } catch (e) {
-      setPageError(e instanceof Error ? e.message : 'Failed to crawl company website');
+      showToast(e instanceof Error ? e.message : 'Failed to crawl company website', 'error');
     } finally {
       setCrawlingCompIndex(null);
     }
@@ -534,193 +902,103 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
   const handlePersonalPortfolioCrawl = async (newUrl: string) => {
     if (!newUrl.trim() || !id) return;
     setCrawlingPersonalWeb(true);
-    setPageError(null);
     try {
       await updateLeadDetailsApi(id, { portfolioUrl: newUrl.trim() });
       const crawlRes = await crawlLeadWebsiteApi(id, newUrl.trim());
       setLead(crawlRes.result);
       setEditingPersonalWeb(false);
+      showToast('Personal portfolio saved and crawled!', 'success');
     } catch (e) {
-      setPageError(e instanceof Error ? e.message : 'Failed to crawl personal website');
+      showToast(e instanceof Error ? e.message : 'Failed to crawl personal website', 'error');
     } finally {
       setCrawlingPersonalWeb(false);
     }
   };
 
-  // Save edited company emails & trigger SMTP verification via verifyCompanyEmails
-  // (does NOT call addManualEmail which would push to discoveredEmails/personal pool)
-  const handleSaveCompanyEmails = async (companyIndex: number) => {
+  const handleToggleApproveDraft = async (boxIndex: number) => {
     if (!id) return;
-    setSavingCompanyEmails(true);
-    setPageError(null);
     try {
-      const parsedEmails = companyEmailsInput
-        .split(/[,;\s]+/)
-        .map((e) => e.trim().toLowerCase())
-        .filter((e) => e.includes('@'));
+      if (boxIndex < 0) {
+        // Personal Profile Outreach Draft
+        const primaryPersonalEmail = personalEmails[0] || lead?.email || '';
+        const emailStatus = verifiedMap.get(primaryPersonalEmail);
 
-      const otherBoxesEmails = new Set<string>();
-      companies.forEach((comp, idx) => {
-        if (idx !== companyIndex) {
-          (comp.companyEmails ?? []).forEach((e) => otherBoxesEmails.add(e.toLowerCase()));
+        if (!lead?.approved) {
+          if (!primaryPersonalEmail || (emailStatus !== 'valid' && emailStatus !== 'risky')) {
+            showToast('Cannot approve draft! Contact email must be entered and SMTP verified as valid or risky.', 'error');
+            return;
+          }
         }
-      });
-      personalEmails.forEach((e) => otherBoxesEmails.add(e.toLowerCase()));
 
-      const duplicates = parsedEmails.filter((e) => otherBoxesEmails.has(e));
-      if (duplicates.length > 0) {
-        setPageError(`Email "${duplicates.join(', ')}" already exists in another sub-box!`);
-        setSavingCompanyEmails(false);
-        return;
-      }
+        const newApproved = !lead?.approved;
+        const res = await updateLeadDetailsApi(id, { approved: newApproved });
+        setLead(res.result);
+        showToast(newApproved ? 'Personal draft approved!' : 'Personal draft approval removed.', 'success');
+      } else {
+        // Company Outreach Draft (boxIndex >= 0)
+        const updatedCompanies = [...companies];
+        const comp = updatedCompanies[boxIndex];
+        if (!comp) return;
 
-      const updatedCompanies = [...companies];
-      updatedCompanies[companyIndex] = {
-        ...updatedCompanies[companyIndex],
-        companyEmails: Array.from(new Set(parsedEmails)),
-      };
+        const compEmails = companyEmailMap.get(boxIndex) ?? [];
+        const primaryEmail = compEmails[0] || '';
+        const emailStatus = verifiedMap.get(primaryEmail);
 
-      // Use verifyCompanyEmails (not addManualEmail) so emails are SMTP-verified
-      // but NOT pushed into discoveredEmails (the personal pool).
-      const res = await updateLeadDetailsApi(id, {
-        currentCompanies: updatedCompanies,
-        ...(parsedEmails.length > 0 ? { verifyCompanyEmails: parsedEmails } : {}),
-      });
-      setLead(res.result);
-      setEditingCompanyEmailIndex(null);
-    } catch (e) {
-      setPageError(e instanceof Error ? e.message : 'Failed to save company emails');
-    } finally {
-      setSavingCompanyEmails(false);
-    }
-  };
-
-  // Save edited personal emails & trigger instant SMTP verification via discoveredEmails update
-  const handleSavePersonalEmails = async () => {
-    if (!id) return;
-    setSavingPersonalEmails(true);
-    setPageError(null);
-    try {
-      const parsedEmails = personalEmailsInput
-        .split(/[,;\s]+/)
-        .map((e) => e.trim().toLowerCase())
-        .filter((e) => e.includes('@'));
-
-      const companyEmailsSet = new Set<string>();
-      companies.forEach((comp) => {
-        (comp.companyEmails ?? []).forEach((e) => companyEmailsSet.add(e.toLowerCase()));
-      });
-
-      const duplicates = parsedEmails.filter((e) => companyEmailsSet.has(e));
-      if (duplicates.length > 0) {
-        setPageError(`Email "${duplicates.join(', ')}" is already assigned to a Company sub-box!`);
-        setSavingPersonalEmails(false);
-        return;
-      }
-
-      // Set discoveredEmails directly — the API handler will SMTP-verify any new ones
-      // and update emailValidationStatus for the personal primary email automatically.
-      const res = await updateLeadDetailsApi(id, {
-        discoveredEmails: Array.from(new Set(parsedEmails)),
-      });
-      setLead(res.result);
-      setEditingPersonalEmails(false);
-    } catch (e) {
-      setPageError(e instanceof Error ? e.message : 'Failed to save personal emails');
-    } finally {
-      setSavingPersonalEmails(false);
-    }
-  };
-
-  const handleToggleApproveDraft = async (companyIndex: number) => {
-    if (!id) return;
-    setPageError(null);
-    try {
-      const updatedCompanies = [...companies];
-      const comp = updatedCompanies[companyIndex];
-
-      const compEmails = companyEmailMap.get(companyIndex) ?? [];
-      const primaryEmail = compEmails[0] || lead?.email || '';
-      const emailStatus = verifiedMap.get(primaryEmail);
-
-      if (!comp.approved) {
-        if (!primaryEmail || emailStatus !== 'valid') {
-          setPageError('Cannot approve email draft! Target contact email must be entered and SMTP verified as valid before approval.');
-          return;
+        if (!comp.approved) {
+          if (!primaryEmail || (emailStatus !== 'valid' && emailStatus !== 'risky')) {
+            showToast('Cannot approve draft! Contact email must be entered and SMTP verified as valid or risky.', 'error');
+            return;
+          }
         }
-      }
 
-      comp.approved = !comp.approved;
+        comp.approved = !comp.approved;
 
-      const res = await updateLeadDetailsApi(id, {
-        currentCompanies: updatedCompanies,
-        approved: updatedCompanies[0]?.approved ?? lead?.approved,
-      });
-      setLead(res.result);
-    } catch (e) {
-      setPageError(e instanceof Error ? e.message : 'Failed to update approval');
-    }
-  };
-
-  // Save company or personal draft subject & body from modal
-  const handleSaveCompanyDraftEmail = async (companyIndex: number, markApproved: boolean = false) => {
-    if (!id) return;
-    setSavingDraftIndex(companyIndex);
-    try {
-      if (companyIndex === -1) {
         const res = await updateLeadDetailsApi(id, {
-          emailSubject: draftSubjectInput,
-          emailBody: draftBodyInput,
-          ...(markApproved ? { approved: true } : {}),
+          currentCompanies: updatedCompanies,
+          approved: updatedCompanies[0]?.approved ?? lead?.approved,
         });
         setLead(res.result);
-        setEditingDraftIndex(null);
-        return;
+        showToast(comp.approved ? 'Company draft approved!' : 'Company draft approval removed.', 'success');
       }
-
-      const updatedCompanies = [...companies];
-      updatedCompanies[companyIndex] = {
-        ...updatedCompanies[companyIndex],
-        emailSubject: draftSubjectInput,
-        emailBody: draftBodyInput,
-        ...(markApproved ? { approved: true } : {}),
-      };
-
-      const res = await updateLeadDetailsApi(id, {
-        currentCompanies: updatedCompanies,
-        emailSubject: updatedCompanies[0]?.emailSubject ?? lead?.emailSubject,
-        emailBody: updatedCompanies[0]?.emailBody ?? lead?.emailBody,
-        approved: updatedCompanies[0]?.approved ?? lead?.approved,
-      });
-      setLead(res.result);
-      setEditingDraftIndex(null);
     } catch (e) {
-      setPageError(e instanceof Error ? e.message : 'Failed to save email draft');
-    } finally {
-      setSavingDraftIndex(null);
+      showToast(e instanceof Error ? e.message : 'Failed to update approval', 'error');
     }
   };
 
-  const handleToggleApprovePersonalDraft = async () => {
+
+  // Save inline-edited subject + body for a specific draft box
+  const handleSaveInlineDraft = async (boxIndex: number, subjectOverride?: string, bodyOverride?: string) => {
     if (!id) return;
-    setPageError(null);
+    setSavingDraftIndex(boxIndex);
     try {
-      const primaryEmail = personalEmails[0] || lead?.email || '';
-      const emailStatus = verifiedMap.get(primaryEmail);
+      const subjToSave = subjectOverride ?? (boxIndex === -1 ? lead?.emailSubject : companies[boxIndex]?.emailSubject) ?? '';
+      const bodyToSave = bodyOverride ?? (boxIndex === -1 ? lead?.emailBody : companies[boxIndex]?.emailBody) ?? '';
 
-      if (!lead?.approved) {
-        if (!primaryEmail || emailStatus !== 'valid') {
-          setPageError('Cannot approve email draft! Target contact email must be entered and SMTP verified as valid before approval.');
-          return;
-        }
+      if (boxIndex === -1) {
+        const res = await updateLeadDetailsApi(id, {
+          emailSubject: subjToSave,
+          emailBody: bodyToSave,
+        });
+        setLead(res.result);
+      } else {
+        const updatedCompanies = [...companies];
+        updatedCompanies[boxIndex] = {
+          ...updatedCompanies[boxIndex],
+          emailSubject: subjToSave,
+          emailBody: bodyToSave,
+        };
+        const res = await updateLeadDetailsApi(id, {
+          currentCompanies: updatedCompanies,
+          emailSubject: updatedCompanies[0]?.emailSubject ?? lead?.emailSubject,
+          emailBody: updatedCompanies[0]?.emailBody ?? lead?.emailBody,
+        });
+        setLead(res.result);
       }
-
-      const res = await updateLeadDetailsApi(id, {
-        approved: !lead?.approved,
-      });
-      setLead(res.result);
+      showToast('Email draft saved successfully!', 'success');
     } catch (e) {
-      setPageError(e instanceof Error ? e.message : 'Failed to update approval');
+      showToast(e instanceof Error ? e.message : 'Failed to save email draft', 'error');
+    } finally {
+      setSavingDraftIndex(null);
     }
   };
 
@@ -728,40 +1006,31 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
   const handleRegenerateCompanyDraft = async (companyIndex: number) => {
     if (!id) return;
     setRegeneratingCompIndex(companyIndex);
-    setPageError(null);
     try {
       const res = await generateLeadEmailApi(id, undefined, companyIndex);
       setLead(res.result);
+      showToast('Email draft regenerated with AI!', 'success');
     } catch (e) {
-      setPageError(e instanceof Error ? e.message : 'Failed to regenerate email draft');
+      showToast(e instanceof Error ? e.message : 'Failed to regenerate email draft', 'error');
     } finally {
       setRegeneratingCompIndex(null);
     }
   };
 
-  // Refine Draft with AI Prompt from Modal
+  // Refine Draft with AI Prompt (per-box inline bar)
   const handleAiRefineDraft = async (companyIndex: number) => {
-    if (!id || !aiRewritePrompt.trim()) return;
-    setRewritingAi(true);
-    setPageError(null);
+    const promptText = (boxAiPrompts[companyIndex] || '').trim();
+    if (!id || !promptText) return;
+    setRewritingAiIndex(companyIndex);
     try {
-      const res = await generateLeadEmailApi(id, aiRewritePrompt.trim(), companyIndex);
+      const res = await generateLeadEmailApi(id, promptText, companyIndex);
       setLead(res.result);
-      if (companyIndex === -1) {
-        setDraftSubjectInput(res.result.emailSubject || draftSubjectInput);
-        setDraftBodyInput(res.result.emailBody || draftBodyInput);
-      } else {
-        const updatedComp = res.result.currentCompanies?.[companyIndex];
-        if (updatedComp) {
-          setDraftSubjectInput(updatedComp.emailSubject || draftSubjectInput);
-          setDraftBodyInput(updatedComp.emailBody || draftBodyInput);
-        }
-      }
-      setAiRewritePrompt('');
+      setBoxAiPrompts((prev) => ({ ...prev, [companyIndex]: '' }));
+      showToast('Email draft refined with AI!', 'success');
     } catch (e) {
-      setPageError(e instanceof Error ? e.message : 'Failed to refine draft with AI');
+      showToast(e instanceof Error ? e.message : 'Failed to refine draft with AI', 'error');
     } finally {
-      setRewritingAi(false);
+      setRewritingAiIndex(null);
     }
   };
 
@@ -793,7 +1062,7 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
             jobTitle: 'Professional',
             workPeriod: null,
             websiteUrl: null,
-            roleSummary: '',
+            summary: '',
           },
         ];
 
@@ -804,22 +1073,29 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
     pipeline.verifiedEmails.forEach((v) => verifiedMap.set(v.email, v.status));
   }
 
-  const allDiscoveredEmails = Array.from(
-    new Set([
-      ...(lead?.discoveredEmails !== undefined && lead.discoveredEmails.length > 0
+  const explicitDiscoveredEmails = Array.from(
+    new Set(
+      lead?.discoveredEmails !== undefined && lead.discoveredEmails.length > 0
         ? lead.discoveredEmails
         : lead?.email
         ? [lead.email]
-        : []),
-      ...(pipeline?.crawledEmails ?? []),
-    ])
+        : []
+    )
   );
 
-  const { companyEmailMap, personalEmails } = getCategorizedEmails(companies, allDiscoveredEmails, portfolioUrl);
+  const unassignedCrawledEmails = pipeline?.crawledEmails ?? [];
+
+  const { companyEmailMap, personalEmails } = getCategorizedEmails(
+    companies,
+    explicitDiscoveredEmails,
+    unassignedCrawledEmails,
+    portfolioUrl
+  );
+
   const personalPhones = Array.from(new Set<string>([...(lead?.discoveredPhones ?? []), ...(pipeline?.crawledPhones ?? [])]));
 
   return (
-    <div className="w-full max-w-none px-4 sm:px-8 py-6 space-y-6">
+    <div className="w-full max-w-none px-4 sm:px-8 py-6 space-y-6 relative">
       {/* Top Bar Navigation */}
       <div className="flex items-center justify-between gap-4 border-b border-slate-200 pb-4">
         <div className="flex items-center gap-3">
@@ -855,13 +1131,6 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
           </Button>
         </div>
       </div>
-
-      {pageError && (
-        <div className="flex gap-2.5 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-          <AlertTriangleIcon width={15} height={15} className="shrink-0 mt-0.5" />
-          {pageError}
-        </div>
-      )}
 
       {/* Step Progress Indicator */}
       <PhaseSteps phase={pipeline?.phase ?? 'done'} running={!!pipeline?.running} />
@@ -903,7 +1172,7 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
                 </div>
               </div>
 
-              {/* Personal Portfolio URL Controls (Typing & Focus Bug Fix) */}
+              {/* Personal Portfolio URL Controls */}
               <div className="flex items-center gap-2 shrink-0">
                 {crawlingPersonalWeb ? (
                   <div className="flex items-center gap-2 bg-blue-50 border border-blue-200 px-3 py-1.5 rounded-md text-blue-700 text-xs font-semibold animate-pulse shadow-2xs">
@@ -979,121 +1248,218 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
               </div>
             </div>
 
-            {/* Personal Emails with SMTP Re-verify & Remap Dropdown */}
+            {/* Personal Emails — per-email edit/delete/add with save-first then SMTP */}
             <div>
               <div className="flex items-center justify-between mb-1.5">
                 <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Personal Emails</span>
-                {!editingPersonalEmails && (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={isAnyCrawlActive}
-                    onClick={() => {
-                      setEditingPersonalEmails(true);
-                      setPersonalEmailsInput(personalEmails.join(', '));
-                    }}
-                    className="text-[10px] px-2 py-0.5 border-blue-200 text-blue-700 hover:bg-blue-50 disabled:opacity-40 flex items-center gap-1"
+                {addingEmailBox !== 'personal' && (
+                  <button
+                    type="button"
+                    onClick={() => { setAddingEmailBox('personal'); setAddingEmailValue(''); }}
+                    className="text-[10px] font-bold text-blue-700 bg-blue-50 border border-blue-200 px-2.5 py-0.5 rounded hover:bg-blue-100 flex items-center gap-1 transition-colors"
                   >
-                    <EditIcon width={11} height={11} />
-                    Edit Personal Email(s)
-                  </Button>
+                    + Add Email
+                  </button>
                 )}
               </div>
 
-              {editingPersonalEmails ? (
-                <div className="flex flex-col gap-1.5 mb-2 bg-blue-50/50 p-2.5 rounded-md border border-blue-100">
-                  <label className="text-[10px] font-bold text-blue-700">Edit Personal Emails (Comma-Separated):</label>
+              {/* Add email row with Inline Zod-Style Error Helper */}
+              {addingEmailBox === 'personal' && (
+                <div className="flex flex-col gap-1.5 mb-2 bg-blue-50/60 border border-blue-100 rounded-md px-3 py-2.5">
                   <div className="flex items-center gap-1.5">
                     <input
-                      type="text"
-                      placeholder="e.g. candidate@gmail.com, personal@outlook.com"
-                      value={personalEmailsInput}
-                      onChange={(e) => setPersonalEmailsInput(e.target.value)}
-                      disabled={isAnyCrawlActive}
-                      className="text-xs border border-slate-300 rounded px-2.5 py-1.5 focus:ring-1 focus:ring-blue-500 focus:outline-none flex-1 bg-white disabled:opacity-50 font-mono"
+                      type="email"
+                      autoFocus
+                      placeholder="e.g. name@domain.com"
+                      value={addingEmailValue}
+                      onChange={(e) => setAddingEmailValue(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && isValidEmail(addingEmailValue)) {
+                          void handleAddPersonalEmail();
+                        }
+                      }}
+                      disabled={addingEmailLoading}
+                      className={[
+                        'text-xs border rounded px-2.5 py-1.5 focus:ring-1 focus:outline-none flex-1 bg-white font-mono disabled:opacity-50 transition-colors',
+                        addingEmailValue.length > 0 && !isValidEmail(addingEmailValue)
+                          ? 'border-red-400 focus:ring-red-500 bg-red-50/30 text-red-900'
+                          : 'border-slate-300 focus:ring-blue-500 text-slate-900',
+                      ].join(' ')}
                     />
                     <Button
                       size="sm"
-                      onClick={() => { void handleSavePersonalEmails(); }}
-                      disabled={savingPersonalEmails || isAnyCrawlActive}
-                      className="bg-blue-600 hover:bg-blue-700 text-white text-[11px] px-3 py-1 font-semibold flex items-center gap-1 shrink-0 disabled:opacity-50"
+                      disabled={addingEmailLoading || !isValidEmail(addingEmailValue)}
+                      onClick={() => { void handleAddPersonalEmail(); }}
+                      className="bg-blue-600 hover:bg-blue-700 text-white text-[11px] px-3 py-1.5 font-semibold shrink-0 flex items-center gap-1 disabled:opacity-40 transition-all"
                     >
-                      {savingPersonalEmails ? <LoaderIcon width={10} height={10} className="animate-spin" /> : <CheckCircleIcon width={10} height={10} />}
-                      Save Personal Emails
+                      {addingEmailLoading ? <LoaderIcon width={10} height={10} className="animate-spin" /> : <CheckCircleIcon width={10} height={10} />}
+                      Save & Verify
                     </Button>
                     <button
                       type="button"
-                      onClick={() => setEditingPersonalEmails(false)}
+                      onClick={() => { setAddingEmailBox(null); setAddingEmailValue(''); }}
                       className="text-[10px] text-slate-400 hover:text-slate-600 px-1"
                     >
                       Cancel
                     </button>
                   </div>
+                  {addingEmailValue.length > 0 && !isValidEmail(addingEmailValue) && (
+                    <p className="text-[11px] font-medium text-red-600 flex items-center gap-1 animate-in fade-in">
+                      <AlertTriangleIcon width={12} height={12} className="shrink-0 text-red-500" />
+                      Invalid email address (e.g. name@domain.com)
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {personalEmails.length === 0 && addingEmailBox !== 'personal' ? (
+                <div className="flex items-center justify-between bg-amber-50 border border-amber-200 rounded-md px-3 py-2 text-xs">
+                  <span className="text-amber-800 font-semibold italic">No personal email address mapped yet</span>
+                  <Badge tone="warning">⚠️ No Personal Email</Badge>
                 </div>
               ) : (
-                <>
-                  {personalEmails.length === 0 ? (
-                    <div className="flex items-center justify-between bg-amber-50 border border-amber-200 rounded-md px-3 py-2 text-xs">
-                      <span className="text-amber-800 font-semibold italic">No personal email address mapped yet</span>
-                      <Badge tone="warning">⚠️ No Personal Email</Badge>
-                    </div>
-                  ) : (
-                    <ul className="space-y-1.5">
-                      {personalEmails.map((em: string) => {
-                        const status = verifiedMap.get(em);
-                        const isVerifyingThis = verifyingEmailMap[em] || isGlobalVerifyRunning;
+                <ul className="space-y-1.5">
+                  {personalEmails.map((em: string) => {
+                    const status = verifiedMap.get(em);
+                    const isVerifyingThis = verifyingEmailMap[em] || isGlobalVerifyRunning;
+                    const isRemapping = remapLoadingMap[em];
+                    const isEditingThis = editingEmailKey === em;
 
-                        return (
-                          <li key={em} className="flex flex-wrap items-center justify-between bg-white border border-slate-200 rounded-md px-3 py-1.5 gap-2">
-                            <span className="text-xs font-bold text-slate-900 font-mono shrink-0">{em}</span>
-
-                            <div className="flex items-center gap-2 ml-auto">
-                              <SmtpBadge status={status ?? 'pending'} />
-
-                              {/* Single Email SMTP Re-verify Button */}
+                    return (
+                      <li key={em} className="flex flex-wrap items-center gap-2 bg-white border border-slate-200 rounded-md px-3 py-1.5">
+                        {isEditingThis ? (
+                          <div className="flex flex-col gap-1 flex-1">
+                            <div className="flex items-center gap-1.5">
+                              <input
+                                autoFocus
+                                type="email"
+                                value={editingEmailValue}
+                                onChange={(e) => setEditingEmailValue(e.target.value)}
+                                disabled={editingEmailLoading}
+                                className={[
+                                  'text-xs font-mono border rounded px-2 py-1 flex-1 focus:ring-1 focus:outline-none bg-white disabled:opacity-50 transition-colors',
+                                  editingEmailValue.length > 0 && !isValidEmail(editingEmailValue)
+                                    ? 'border-red-400 focus:ring-red-500 bg-red-50/30 text-red-900'
+                                    : 'border-blue-300 focus:ring-blue-500 text-slate-900',
+                                ].join(' ')}
+                              />
                               <button
                                 type="button"
-                                disabled={isVerifyingThis}
-                                onClick={() => { void handleVerifySingleEmail(em); }}
-                                className="flex items-center gap-1 text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded hover:bg-amber-100 transition-colors disabled:opacity-50"
-                                title="Re-run real socket SMTP verification on this email"
+                                disabled={editingEmailLoading || !isValidEmail(editingEmailValue)}
+                                onClick={() => {
+                                  void (async () => {
+                                    const newVal = editingEmailValue.trim().toLowerCase();
+                                    if (!isValidEmail(newVal)) {
+                                      showToast(`"${newVal || 'Empty'}" is not a valid email address!`, 'error');
+                                      return;
+                                    }
+                                    setEditingEmailLoading(true);
+                                    try {
+                                      const updated = personalEmails.map((e) => e === em ? newVal : e);
+                                      const res = await updateLeadDetailsApi(id, { discoveredEmails: updated });
+                                      setLead(res.result);
+                                      setEditingEmailKey(null);
+                                      showToast(`Updated email to ${newVal}`, 'success');
+                                      void handleVerifySingleEmail(newVal);
+                                    } catch (err) {
+                                      showToast(err instanceof Error ? err.message : 'Failed to update email', 'error');
+                                    } finally {
+                                      setEditingEmailLoading(false);
+                                    }
+                                  })();
+                                }}
+                                className="text-[10px] font-bold text-green-700 bg-green-50 border border-green-200 px-2 py-0.5 rounded hover:bg-green-100 flex items-center gap-1 disabled:opacity-40"
                               >
-                                {isVerifyingThis ? (
-                                  <>
-                                    <LoaderIcon width={10} height={10} className="animate-spin text-amber-600" />
-                                    Verifying...
-                                  </>
-                                ) : (
-                                  <>⚡ Verify SMTP</>
-                                )}
+                                {editingEmailLoading ? <LoaderIcon width={9} height={9} className="animate-spin" /> : '✓'} Save
                               </button>
+                              <button type="button" onClick={() => setEditingEmailKey(null)} className="text-[10px] text-slate-400 hover:text-slate-600 px-1">
+                                Cancel
+                              </button>
+                            </div>
+                            {editingEmailValue.length > 0 && !isValidEmail(editingEmailValue) && (
+                              <p className="text-[11px] font-medium text-red-600 flex items-center gap-1">
+                                <AlertTriangleIcon width={11} height={11} className="shrink-0 text-red-500" />
+                                Invalid email format (e.g. user@domain.com)
+                              </p>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="text-xs font-bold text-slate-900 font-mono flex-1 min-w-0 truncate">{em}</span>
+                        )}
 
-                              {/* Email Remapping Dropdown */}
+                        <div className="flex items-center gap-1.5 ml-auto shrink-0">
+                          <SmtpBadge status={status ?? 'pending'} />
+
+                          <button
+                            type="button"
+                            disabled={isVerifyingThis}
+                            onClick={() => { void handleVerifySingleEmail(em); }}
+                            title="Re-verify SMTP"
+                            className="flex items-center gap-1 text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded hover:bg-amber-100 transition-colors disabled:opacity-50"
+                          >
+                            {isVerifyingThis ? <LoaderIcon width={9} height={9} className="animate-spin text-amber-600" /> : '⚡'}
+                          </button>
+
+                          {!isEditingThis && (
+                            <button
+                              type="button"
+                              onClick={() => { setEditingEmailKey(em); setEditingEmailValue(em); }}
+                              title="Edit email"
+                              className="text-[10px] text-slate-400 hover:text-indigo-600 p-0.5 rounded transition-colors"
+                            >
+                              <EditIcon width={12} height={12} />
+                            </button>
+                          )}
+
+                          {/* Remap to company */}
+                          {companies.length > 0 && (
+                            isRemapping ? (
+                              <LoaderIcon width={10} height={10} className="animate-spin text-indigo-500" />
+                            ) : (
                               <select
                                 value="personal"
                                 onChange={(e) => {
                                   const val = e.target.value;
-                                  if (val.startsWith('company-')) {
-                                    const targetIdx = parseInt(val.replace('company-', ''), 10);
-                                    void handleRemapEmail(em, 'personal', targetIdx);
-                                  }
+                                  if (val.startsWith('c-')) { void handleRemapEmail(em, 'personal', parseInt(val.slice(2), 10)); }
                                 }}
                                 className="text-[10px] border border-slate-200 rounded px-1.5 py-0.5 bg-slate-50 text-slate-700 font-semibold focus:outline-none cursor-pointer hover:bg-slate-100"
+                                title="Move to company box"
                               >
-                                <option value="personal">👤 Personal Profile</option>
-                                {companies.map((c, idx) => (
-                                  <option key={idx} value={`company-${idx}`}>
-                                    🏢 Move to {c.companyName || `Company #${idx + 1}`}
-                                  </option>
-                                ))}
+                                <option value="personal">👤 Personal</option>
+                                {companies.map((c, idx) => <option key={idx} value={`c-${idx}`}>🏢 {c.companyName || `Co. #${idx + 1}`}</option>)}
                               </select>
-                            </div>
-                          </li>
-                        );
-                      })}
-                    </ul>
-                  )}
-                </>
+                            )
+                          )}
+
+                          {/* Delete personal email */}
+                          <button
+                            type="button"
+                            disabled={!!deletingEmailKey}
+                            onClick={() => {
+                              void (async () => {
+                                setDeletingEmailKey(em);
+                                try {
+                                  const updated = personalEmails.filter((e) => e !== em);
+                                  const res = await updateLeadDetailsApi(id, { discoveredEmails: updated });
+                                  setLead(res.result);
+                                  showToast(`Deleted ${em}`, 'info');
+                                } catch (err) {
+                                  showToast(err instanceof Error ? err.message : 'Failed to delete email', 'error');
+                                } finally {
+                                  setDeletingEmailKey(null);
+                                }
+                              })();
+                            }}
+                            title="Delete email"
+                            className="text-[10px] text-red-400 hover:text-red-600 p-0.5 rounded transition-colors disabled:opacity-40"
+                          >
+                            {deletingEmailKey === em ? <LoaderIcon width={10} height={10} className="animate-spin" /> : <XIcon width={12} height={12} />}
+                          </button>
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
               )}
             </div>
 
@@ -1105,101 +1471,32 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
               </div>
             )}
 
-            {/* IN-BOX PERSONAL AI OUTREACH DRAFT EMAIL & REGENERATE */}
+            {/* IN-BOX PERSONAL AI OUTREACH DRAFT — Fully Inline Editor */}
             {(() => {
               const primaryPersonalEmail = personalEmails[0] || lead?.email || '';
               const personalSmtpStatus = primaryPersonalEmail ? (verifiedMap.get(primaryPersonalEmail) ?? 'pending') : null;
 
               return (
-                <div className="border border-blue-200 bg-white rounded-md p-3.5 space-y-2 mt-3 shadow-2xs">
-                  <div className="flex flex-wrap items-center justify-between border-b border-slate-100 pb-2 gap-2">
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs font-extrabold text-blue-950 flex items-center gap-1.5">
-                        <SparklesIcon width={13} height={13} className="text-blue-500" />
-                        Personal AI Outreach Draft Email
-                      </span>
-                      {!primaryPersonalEmail ? (
-                        <Badge tone="warning">⚠️ No Email Found</Badge>
-                      ) : personalSmtpStatus === 'valid' ? (
-                        <Badge tone="success">✓ Verified SMTP</Badge>
-                      ) : personalSmtpStatus === 'invalid' ? (
-                        <Badge tone="danger">❌ Email Not Exist</Badge>
-                      ) : (
-                        <Badge tone="warning">⚡ SMTP Not Verified</Badge>
-                      )}
-                    </div>
-
-                <div className="flex items-center gap-2">
-                  {/* Personal Draft Regenerate Button */}
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={regeneratingCompIndex === -1 || isAnyCrawlActive}
-                    onClick={() => { void handleRegenerateCompanyDraft(-1); }}
-                    className="text-[10px] px-2.5 py-0.5 border-blue-200 text-blue-700 hover:bg-blue-50 flex items-center gap-1 font-semibold disabled:opacity-40"
-                  >
-                    {regeneratingCompIndex === -1 ? (
-                      <>
-                        <LoaderIcon width={11} height={11} className="animate-spin text-blue-600" />
-                        Generating Draft...
-                      </>
-                    ) : (
-                      <>
-                        <SparklesIcon width={11} height={11} className="text-blue-600" />
-                        ✨ Regenerate Draft
-                      </>
-                    )}
-                  </Button>
-
-                  <Button
-                    size="sm"
-                    variant={lead?.approved ? 'primary' : 'outline'}
-                    onClick={() => { void handleToggleApprovePersonalDraft(); }}
-                    className={[
-                      'text-[10px] px-2.5 py-0.5 font-bold transition-all',
-                      lead?.approved
-                        ? 'bg-green-600 hover:bg-green-700 text-white border-green-600'
-                        : 'border-slate-300 text-slate-600 hover:bg-slate-50',
-                    ].join(' ')}
-                  >
-                    {lead?.approved ? '✓ Approved' : 'Approve Draft'}
-                  </Button>
-
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => {
-                      setEditingDraftIndex(-1);
-                      setDraftSubjectInput(lead?.emailSubject || '');
-                      setDraftBodyInput(lead?.emailBody || '');
-                    }}
-                    className="text-[10px] px-2 py-0.5 border-blue-200 text-blue-700 hover:bg-blue-50 flex items-center gap-1 font-semibold"
-                  >
-                    <EditIcon width={11} height={11} />
-                    Preview & Edit
-                  </Button>
-                  </div>
-                </div>
-
-              {/* Formatted HTML Display (No raw HTML tags) */}
-              {lead?.emailSubject && lead?.emailBody ? (
-                <div className="space-y-2 pt-1">
-                  <div className="text-xs font-bold text-slate-900 border-b border-slate-100 pb-1.5 flex items-center justify-between">
-                    <span>Subject: <span className="font-semibold text-slate-800">{lead.emailSubject}</span></span>
-                  </div>
-                  <div
-                    className="text-xs text-slate-700 leading-relaxed font-sans prose prose-slate max-w-none pt-1"
-                    dangerouslySetInnerHTML={{ __html: lead.emailBody }}
-                  />
-                </div>
-              ) : (
-                <div className="text-xs text-slate-400 italic py-2 text-center">
-                  No personal AI draft generated yet. Click &quot;✨ Regenerate Draft&quot; above to generate one.
-                </div>
-              )}
-            </div>
-          );
-        })()}
+                <InlineRichDraftEditor
+                  title="Personal AI Outreach Draft"
+                  themeColor="blue"
+                  initialSubject={lead?.emailSubject || ''}
+                  initialBody={lead?.emailBody || ''}
+                  smtpStatus={personalSmtpStatus}
+                  hasEmail={Boolean(primaryPersonalEmail)}
+                  isSaving={savingDraftIndex === -1}
+                  isRegenerating={regeneratingCompIndex === -1}
+                  isRewriting={rewritingAiIndex === -1}
+                  isApproved={Boolean(lead?.approved)}
+                  aiPromptValue={boxAiPrompts[-1] || ''}
+                  onSave={(subj, body) => handleSaveInlineDraft(-1, subj, body)}
+                  onRegenerate={() => handleRegenerateCompanyDraft(-1)}
+                  onToggleApprove={() => handleToggleApproveDraft(-99)}
+                  onAiPromptChange={(val) => setBoxAiPrompts((prev) => ({ ...prev, [-1]: val }))}
+                  onAiRefine={() => handleAiRefineDraft(-1)}
+                />
+              );
+            })()}
           </div>
 
           {/* Company Sub-Boxes Updated In-Place with Strict Email Deduplication */}
@@ -1207,12 +1504,11 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
             {companies.map((c, i) => {
               const isCrawlingThis = (crawlingCompIndex === i) || (isGlobalCrawlRunning && Boolean(c.websiteUrl));
               const isEditingThis = editingWebIndex === i;
-              const isEditingCompanyEmailsThis = editingCompanyEmailIndex === i;
 
               const compEmails = companyEmailMap.get(i) ?? [];
-              const draftSubject = c.emailSubject || (i === 0 ? lead?.emailSubject : null);
-              const draftBody = c.emailBody || (i === 0 ? lead?.emailBody : null);
-              const isApproved = c.approved ?? (i === 0 ? lead?.approved : false);
+              const draftSubject = c.emailSubject ?? null;
+              const draftBody = c.emailBody ?? null;
+              const isApproved = c.approved ?? false;
 
               return (
                 <div key={i} className="border border-purple-200 bg-purple-50/20 rounded-lg p-4 space-y-3">
@@ -1225,7 +1521,7 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
                       </div>
                     </div>
 
-                    {/* Company Website URL Controls (Typing Bug Fix) */}
+                    {/* Company Website URL Controls */}
                     <div className="flex items-center gap-2 shrink-0">
                       {isCrawlingThis ? (
                         <div className="flex items-center gap-2 bg-indigo-50 border border-indigo-200 px-3 py-1.5 rounded-md text-indigo-700 text-xs font-semibold animate-pulse shadow-2xs">
@@ -1305,447 +1601,284 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
                     </div>
                   </div>
 
-                  {/* Company Contact Emails with SMTP Re-verify & Remap Dropdown */}
+                  {/* Company Contact Emails — per-email edit/delete/add with save-first then SMTP */}
                   <div>
                     <div className="flex items-center justify-between mb-1.5">
                       <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Contact Emails</span>
-                      {!isEditingCompanyEmailsThis && (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          disabled={isAnyCrawlActive}
-                          onClick={() => {
-                            setEditingCompanyEmailIndex(i);
-                            setCompanyEmailsInput(compEmails.join(', '));
-                          }}
-                          className="text-[10px] px-2 py-0.5 border-indigo-200 text-indigo-700 hover:bg-indigo-50 disabled:opacity-40 flex items-center gap-1"
+                      {addingEmailBox !== String(i) && (
+                        <button
+                          type="button"
+                          onClick={() => { setAddingEmailBox(String(i)); setAddingEmailValue(''); }}
+                          className="text-[10px] font-bold text-indigo-700 bg-indigo-50 border border-indigo-200 px-2.5 py-0.5 rounded hover:bg-indigo-100 flex items-center gap-1 transition-colors"
                         >
-                          <EditIcon width={11} height={11} />
-                          Edit Emails
-                        </Button>
+                          + Add Email
+                        </button>
                       )}
                     </div>
 
-                    {isEditingCompanyEmailsThis ? (
-                      <div className="flex flex-col gap-1.5 mb-2 bg-indigo-50/50 p-2.5 rounded-md border border-indigo-100">
-                        <label className="text-[10px] font-bold text-indigo-700">Edit Company Emails (Comma-Separated):</label>
+                    {/* Add email row with Inline Zod-Style Error Helper */}
+                    {addingEmailBox === String(i) && (
+                      <div className="flex flex-col gap-1.5 mb-2 bg-indigo-50/60 border border-indigo-100 rounded-md px-3 py-2.5">
                         <div className="flex items-center gap-1.5">
                           <input
-                            type="text"
+                            type="email"
+                            autoFocus
                             placeholder="e.g. contact@company.com"
-                            value={companyEmailsInput}
-                            onChange={(e) => setCompanyEmailsInput(e.target.value)}
-                            disabled={isAnyCrawlActive}
-                            className="text-xs border border-slate-300 rounded px-2.5 py-1.5 focus:ring-1 focus:ring-indigo-500 focus:outline-none flex-1 bg-white disabled:opacity-50 font-mono"
+                            value={addingEmailValue}
+                            onChange={(e) => setAddingEmailValue(e.target.value)}
+                            disabled={addingEmailLoading}
+                            className={[
+                              'text-xs border rounded px-2.5 py-1.5 focus:ring-1 focus:outline-none flex-1 bg-white font-mono disabled:opacity-50 transition-colors',
+                              addingEmailValue.length > 0 && !isValidEmail(addingEmailValue)
+                                ? 'border-red-400 focus:ring-red-500 bg-red-50/30 text-red-900'
+                                : 'border-slate-300 focus:ring-indigo-500 text-slate-900',
+                            ].join(' ')}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' && isValidEmail(addingEmailValue)) {
+                                void handleAddCompanyEmail(i);
+                              }
+                            }}
                           />
                           <Button
                             size="sm"
-                            onClick={() => { void handleSaveCompanyEmails(i); }}
-                            disabled={savingCompanyEmails || isAnyCrawlActive}
-                            className="bg-indigo-600 hover:bg-indigo-700 text-white text-[11px] px-3 py-1 font-semibold flex items-center gap-1 shrink-0 disabled:opacity-50"
+                            disabled={addingEmailLoading || !isValidEmail(addingEmailValue)}
+                            onClick={() => { void handleAddCompanyEmail(i); }}
+                            className="bg-indigo-600 hover:bg-indigo-700 text-white text-[11px] px-3 py-1.5 font-semibold shrink-0 flex items-center gap-1 disabled:opacity-40 transition-all"
                           >
-                            {savingCompanyEmails ? <LoaderIcon width={10} height={10} className="animate-spin" /> : <CheckCircleIcon width={10} height={10} />}
-                            Save Emails
+                            {addingEmailLoading ? <LoaderIcon width={10} height={10} className="animate-spin" /> : <CheckCircleIcon width={10} height={10} />}
+                            Save & Verify
                           </Button>
                           <button
                             type="button"
-                            onClick={() => setEditingCompanyEmailIndex(null)}
+                            onClick={() => { setAddingEmailBox(null); setAddingEmailValue(''); }}
                             className="text-[10px] text-slate-400 hover:text-slate-600 px-1"
                           >
                             Cancel
                           </button>
                         </div>
+                        {addingEmailValue.length > 0 && !isValidEmail(addingEmailValue) && (
+                          <p className="text-[11px] font-medium text-red-600 flex items-center gap-1 animate-in fade-in">
+                            <AlertTriangleIcon width={12} height={12} className="shrink-0 text-red-500" />
+                            Invalid email address (e.g. contact@company.com)
+                          </p>
+                        )}
+                      </div>
+                    )}
+
+                    {compEmails.length === 0 && addingEmailBox !== String(i) ? (
+                      <div className="flex items-center justify-between bg-amber-50 border border-amber-200 rounded-md px-3 py-2 text-xs">
+                        <span className="text-amber-800 font-semibold italic">{isCrawlingThis ? 'Extracting emails...' : 'No contact emails for this company'}</span>
+                        <Badge tone="warning">⚠️ No Company Email</Badge>
                       </div>
                     ) : (
-                      <>
-                        {compEmails.length === 0 ? (
-                          <div className="flex items-center justify-between bg-amber-50 border border-amber-200 rounded-md px-3 py-2 text-xs">
-                            <span className="text-amber-800 font-semibold italic">
-                              {isCrawlingThis
-                                ? 'Extracting contact emails from website...'
-                                : 'No contact emails for this company'}
-                            </span>
-                            <Badge tone="warning">⚠️ No Company Email</Badge>
-                          </div>
-                        ) : (
-                          <ul className="space-y-1.5">
-                            {compEmails.map((em: string) => {
-                              const status = verifiedMap.get(em);
-                              const isVerifyingThis = verifyingEmailMap[em] || isGlobalVerifyRunning;
+                      <ul className="space-y-1.5">
+                        {compEmails.map((em: string) => {
+                          const status = verifiedMap.get(em);
+                          const isVerifyingThis = verifyingEmailMap[em] || isGlobalVerifyRunning;
+                          const isRemapping = remapLoadingMap[em];
+                          const isEditingThis = editingEmailKey === em;
 
-                              return (
-                                <li key={em} className="flex flex-wrap items-center justify-between bg-white border border-slate-200 rounded-md px-3 py-1.5 gap-2">
-                                  <span className="text-xs font-bold text-slate-900 font-mono shrink-0">{em}</span>
-
-                                  <div className="flex items-center gap-2 ml-auto">
-                                    <SmtpBadge status={status ?? 'pending'} />
-
-                                    {/* Single Email SMTP Re-verify Button */}
+                          return (
+                            <li key={em} className="flex flex-wrap items-center gap-2 bg-white border border-slate-200 rounded-md px-3 py-1.5">
+                              {isEditingThis ? (
+                                <div className="flex flex-col gap-1 flex-1">
+                                  <div className="flex items-center gap-1.5">
+                                    <input
+                                      autoFocus
+                                      type="email"
+                                      value={editingEmailValue}
+                                      onChange={(e) => setEditingEmailValue(e.target.value)}
+                                      disabled={editingEmailLoading}
+                                      className={[
+                                        'text-xs font-mono border rounded px-2 py-1 flex-1 focus:ring-1 focus:outline-none bg-white disabled:opacity-50 transition-colors',
+                                        editingEmailValue.length > 0 && !isValidEmail(editingEmailValue)
+                                          ? 'border-red-400 focus:ring-red-500 bg-red-50/30 text-red-900'
+                                          : 'border-indigo-300 focus:ring-indigo-500 text-slate-900',
+                                      ].join(' ')}
+                                    />
                                     <button
                                       type="button"
-                                      disabled={isVerifyingThis}
-                                      onClick={() => { void handleVerifySingleEmail(em); }}
-                                      className="flex items-center gap-1 text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded hover:bg-amber-100 transition-colors disabled:opacity-50"
-                                      title="Re-run real socket SMTP verification on this email"
-                                    >
-                                      {isVerifyingThis ? (
-                                        <>
-                                          <LoaderIcon width={10} height={10} className="animate-spin text-amber-600" />
-                                          Verifying...
-                                        </>
-                                      ) : (
-                                        <>⚡ Verify SMTP</>
-                                      )}
-                                    </button>
-
-                                    {/* Email Remapping Dropdown */}
-                                    <select
-                                      value={`company-${i}`}
-                                      onChange={(e) => {
-                                        const val = e.target.value;
-                                        if (val === 'personal') {
-                                          void handleRemapEmail(em, i, 'personal');
-                                        } else if (val.startsWith('company-')) {
-                                          const targetIdx = parseInt(val.replace('company-', ''), 10);
-                                          if (targetIdx !== i) {
-                                            void handleRemapEmail(em, i, targetIdx);
+                                      disabled={editingEmailLoading || !isValidEmail(editingEmailValue)}
+                                      onClick={() => {
+                                        void (async () => {
+                                          const newVal = editingEmailValue.trim().toLowerCase();
+                                          if (!isValidEmail(newVal)) {
+                                            showToast(`"${newVal || 'Empty'}" is not a valid email address!`, 'error');
+                                            return;
                                           }
-                                        }
+                                          setEditingEmailLoading(true);
+                                          try {
+                                            const updComp = companies.map((comp, idx) => idx === i
+                                              ? { ...comp, companyEmails: (comp.companyEmails ?? []).map((e) => e === em ? newVal : e) }
+                                              : { ...comp });
+                                            const res = await updateLeadDetailsApi(id, { currentCompanies: updComp });
+                                            setLead(res.result);
+                                            setEditingEmailKey(null);
+                                            showToast(`Updated email to ${newVal}`, 'success');
+                                            void handleVerifySingleEmail(newVal);
+                                          } catch (err) {
+                                            showToast(err instanceof Error ? err.message : 'Failed to update email', 'error');
+                                          } finally {
+                                            setEditingEmailLoading(false);
+                                          }
+                                        })();
                                       }}
-                                      className="text-[10px] border border-slate-200 rounded px-1.5 py-0.5 bg-slate-50 text-slate-700 font-semibold focus:outline-none cursor-pointer hover:bg-slate-100"
+                                      className="text-[10px] font-bold text-green-700 bg-green-50 border border-green-200 px-2 py-0.5 rounded hover:bg-green-100 flex items-center gap-1 disabled:opacity-40"
                                     >
-                                      <option value="personal">👤 Move to Personal</option>
-                                      {companies.map((compObj, idx) => (
-                                        <option key={idx} value={`company-${idx}`}>
-                                          🏢 {idx === i ? `Assigned to ${compObj.companyName}` : `Move to ${compObj.companyName}`}
-                                        </option>
-                                      ))}
-                                    </select>
+                                      {editingEmailLoading ? <LoaderIcon width={9} height={9} className="animate-spin" /> : '✓'} Save
+                                    </button>
+                                    <button type="button" onClick={() => setEditingEmailKey(null)} className="text-[10px] text-slate-400 hover:text-slate-600 px-1">
+                                      Cancel
+                                    </button>
                                   </div>
-                                </li>
-                              );
-                            })}
-                          </ul>
-                        )}
-                      </>
+                                  {editingEmailValue.length > 0 && !isValidEmail(editingEmailValue) && (
+                                    <p className="text-[11px] font-medium text-red-600 flex items-center gap-1">
+                                      <AlertTriangleIcon width={11} height={11} className="shrink-0 text-red-500" />
+                                      Invalid email format (e.g. user@domain.com)
+                                    </p>
+                                  )}
+                                </div>
+                              ) : (
+                                <span className="text-xs font-bold text-slate-900 font-mono flex-1 min-w-0 truncate">{em}</span>
+                              )}
+
+                              <div className="flex items-center gap-1.5 ml-auto shrink-0">
+                                <SmtpBadge status={status ?? 'pending'} />
+                                <button
+                                  type="button"
+                                  disabled={isVerifyingThis}
+                                  onClick={() => { void handleVerifySingleEmail(em); }}
+                                  title="Re-verify SMTP"
+                                  className="flex items-center gap-1 text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded hover:bg-amber-100 transition-colors disabled:opacity-50"
+                                >
+                                  {isVerifyingThis ? <LoaderIcon width={9} height={9} className="animate-spin text-amber-600" /> : '⚡'}
+                                </button>
+                                {!isEditingThis && (
+                                  <button
+                                    type="button"
+                                    onClick={() => { setEditingEmailKey(em); setEditingEmailValue(em); }}
+                                    title="Edit email"
+                                    className="text-[10px] text-slate-400 hover:text-indigo-600 p-0.5 rounded transition-colors"
+                                  >
+                                    <EditIcon width={12} height={12} />
+                                  </button>
+                                )}
+                                {/* Remap */}
+                                {isRemapping ? <LoaderIcon width={10} height={10} className="animate-spin text-indigo-500" /> : (
+                                  <select
+                                    value={`c-${i}`}
+                                    onChange={(e) => {
+                                      const val = e.target.value;
+                                      if (val === 'personal') { void handleRemapEmail(em, i, 'personal'); }
+                                      else if (val.startsWith('c-')) { const idx = parseInt(val.slice(2), 10); if (idx !== i) void handleRemapEmail(em, i, idx); }
+                                    }}
+                                    className="text-[10px] border border-slate-200 rounded px-1.5 py-0.5 bg-slate-50 text-slate-700 font-semibold focus:outline-none cursor-pointer hover:bg-slate-100"
+                                    title="Move email"
+                                  >
+                                    <option value="personal">👤 Personal</option>
+                                    {companies.map((compObj, idx) => <option key={idx} value={`c-${idx}`}>🏢 {idx === i ? `Here` : compObj.companyName || `Co. #${idx + 1}`}</option>)}
+                                  </select>
+                                )}
+                                {/* Delete company email */}
+                                <button
+                                  type="button"
+                                  disabled={!!deletingEmailKey}
+                                  onClick={() => {
+                                    void (async () => {
+                                      setDeletingEmailKey(em);
+                                      try {
+                                        const updComp = companies.map((comp, idx) => idx === i
+                                          ? { ...comp, companyEmails: (comp.companyEmails ?? []).filter((e) => e !== em) }
+                                          : { ...comp });
+                                        const res = await updateLeadDetailsApi(id, { currentCompanies: updComp });
+                                        setLead(res.result);
+                                        showToast(`Deleted ${em}`, 'info');
+                                      } catch (err) {
+                                        showToast(err instanceof Error ? err.message : 'Failed to delete email', 'error');
+                                      } finally {
+                                        setDeletingEmailKey(null);
+                                      }
+                                    })();
+                                  }}
+                                  title="Delete email"
+                                  className="text-[10px] text-red-400 hover:text-red-600 p-0.5 rounded transition-colors disabled:opacity-40"
+                                >
+                                  {deletingEmailKey === em ? <LoaderIcon width={10} height={10} className="animate-spin" /> : <XIcon width={12} height={12} />}
+                                </button>
+                              </div>
+                            </li>
+                          );
+                        })}
+                      </ul>
                     )}
                   </div>
 
-                  {/* IN-BOX AI OUTREACH DRAFT EMAIL & PER-COMPANY REGENERATE */}
+                  {/* IN-BOX AI OUTREACH DRAFT — Fully Inline Editor */}
                   {(() => {
                     const primaryCompEmail = compEmails[0] || '';
                     const compSmtpStatus = primaryCompEmail ? (verifiedMap.get(primaryCompEmail) ?? 'pending') : null;
 
                     return (
-                      <div className="border border-indigo-200 bg-white rounded-md p-3.5 space-y-2 mt-3 shadow-2xs">
-                        <div className="flex flex-wrap items-center justify-between border-b border-slate-100 pb-2 gap-2">
-                          <div className="flex items-center gap-2">
-                            <span className="text-xs font-extrabold text-indigo-950 flex items-center gap-1.5">
-                              <SparklesIcon width={13} height={13} className="text-indigo-500" />
-                              AI Outreach Draft Email
-                            </span>
-                            {!primaryCompEmail ? (
-                              <Badge tone="warning">⚠️ No Email Found</Badge>
-                            ) : compSmtpStatus === 'valid' ? (
-                              <Badge tone="success">✓ Verified SMTP</Badge>
-                            ) : compSmtpStatus === 'invalid' ? (
-                              <Badge tone="danger">❌ Email Not Exist</Badge>
-                            ) : (
-                              <Badge tone="warning">⚡ SMTP Not Verified</Badge>
-                            )}
-                          </div>
-
-                      <div className="flex items-center gap-2">
-                        {/* Per-Company Draft Regenerate Button */}
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          disabled={regeneratingCompIndex === i || isAnyCrawlActive}
-                          onClick={() => { void handleRegenerateCompanyDraft(i); }}
-                          className="text-[10px] px-2.5 py-0.5 border-purple-200 text-purple-700 hover:bg-purple-50 flex items-center gap-1 font-semibold disabled:opacity-40"
-                        >
-                          {regeneratingCompIndex === i ? (
-                            <>
-                              <LoaderIcon width={11} height={11} className="animate-spin text-purple-600" />
-                              Generating Draft...
-                            </>
-                          ) : (
-                            <>
-                              <SparklesIcon width={11} height={11} className="text-purple-600" />
-                              ✨ Regenerate Draft
-                            </>
-                          )}
-                        </Button>
-
-                        <Button
-                          size="sm"
-                          variant={isApproved ? 'primary' : 'outline'}
-                          onClick={() => { void handleToggleApproveDraft(i); }}
-                          className={[
-                            'text-[10px] px-2.5 py-0.5 font-bold transition-all',
-                            isApproved
-                              ? 'bg-green-600 hover:bg-green-700 text-white border-green-600'
-                              : 'border-slate-300 text-slate-600 hover:bg-slate-50',
-                          ].join(' ')}
-                        >
-                          {isApproved ? '✓ Approved' : 'Approve Draft'}
-                        </Button>
-
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => {
-                            setEditingDraftIndex(i);
-                            setDraftSubjectInput(draftSubject || '');
-                            setDraftBodyInput(draftBody || '');
-                          }}
-                          className="text-[10px] px-2 py-0.5 border-indigo-200 text-indigo-700 hover:bg-indigo-50 flex items-center gap-1 font-semibold"
-                        >
-                          <EditIcon width={11} height={11} />
-                          Preview & Edit
-                        </Button>
-                      </div>
-                    </div>
-
-                    {/* Formatted HTML Display (No raw HTML tags) */}
-                    {draftSubject && draftBody ? (
-                      <div className="space-y-2 pt-1">
-                        <div className="text-xs font-bold text-slate-900 border-b border-slate-100 pb-1.5 flex items-center justify-between">
-                          <span>Subject: <span className="font-semibold text-slate-800">{draftSubject}</span></span>
-                        </div>
-                        <div
-                          className="text-xs text-slate-700 leading-relaxed font-sans prose prose-slate max-w-none pt-1"
-                          dangerouslySetInnerHTML={{ __html: draftBody }}
-                        />
-                      </div>
-                    ) : (
-                      <div className="text-xs text-slate-400 italic py-2 text-center">
-                        No AI draft generated for this company yet. Click &quot;✨ Regenerate Draft&quot; above to generate one.
-                      </div>
-                    )}
-                  </div>
-                );
-              })()}
-            </div>
-          );
-        })}
+                      <InlineRichDraftEditor
+                        key={i}
+                        title={`AI Outreach Draft — ${c.companyName || `Company #${i + 1}`}`}
+                        themeColor="indigo"
+                        initialSubject={draftSubject || ''}
+                        initialBody={draftBody || ''}
+                        smtpStatus={compSmtpStatus}
+                        hasEmail={Boolean(primaryCompEmail)}
+                        isSaving={savingDraftIndex === i}
+                        isRegenerating={regeneratingCompIndex === i}
+                        isRewriting={rewritingAiIndex === i}
+                        isApproved={isApproved}
+                        aiPromptValue={boxAiPrompts[i] || ''}
+                        onSave={(subj, body) => handleSaveInlineDraft(i, subj, body)}
+                        onRegenerate={() => handleRegenerateCompanyDraft(i)}
+                        onToggleApprove={() => handleToggleApproveDraft(i)}
+                        onAiPromptChange={(val) => setBoxAiPrompts((prev) => ({ ...prev, [i]: val }))}
+                        onAiRefine={() => handleAiRefineDraft(i)}
+                      />
+                    );
+                  })()}
+                </div>
+              );
+            })}
           </div>
         </CardContent>
       </Card>
 
-      {/* ── RICH DRAFT REWRITE & PREVIEW MODAL WINDOW ───────────────────────── */}
-      {editingDraftIndex !== null && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in">
-          <div className="bg-white rounded-xl shadow-2xl border border-slate-200 w-full max-w-3xl overflow-hidden flex flex-col max-h-[90vh]">
-            {/* Modal Header */}
-            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 bg-slate-50">
-              <div className="flex items-center gap-2">
-                <SparklesIcon width={18} height={18} className="text-indigo-600" />
-                <h3 className="text-base font-extrabold text-slate-900">
-                  Outreach Email Draft — {editingDraftIndex === -1 ? `${fullName} (Personal Direct)` : companies[editingDraftIndex]?.companyName}
-                </h3>
-              </div>
-              <button
-                type="button"
-                onClick={() => setEditingDraftIndex(null)}
-                className="text-slate-400 hover:text-slate-600 p-1 rounded-md"
-              >
-                <XIcon width={18} height={18} />
-              </button>
+      {/* Floating Toast Notification Container (Top-Right & Compact) */}
+      <div className="fixed top-4 right-4 z-50 flex flex-col gap-2 max-w-xs sm:max-w-sm w-full pointer-events-none px-4 sm:px-0">
+        {toasts.map((t) => (
+          <div
+            key={t.id}
+            className={[
+              'pointer-events-auto flex items-center justify-between gap-2.5 px-3.5 py-2.5 rounded-lg shadow-xl border backdrop-blur-md transition-all duration-300 animate-in fade-in slide-in-from-top-3 text-xs font-semibold',
+              t.type === 'error'
+                ? 'bg-slate-900/95 text-red-200 border-red-500/50 shadow-red-950/40'
+                : t.type === 'success'
+                ? 'bg-slate-900/95 text-emerald-200 border-emerald-500/50 shadow-emerald-950/40'
+                : 'bg-slate-900/95 text-slate-200 border-slate-700 shadow-slate-950/40',
+            ].join(' ')}
+          >
+            <div className="flex items-center gap-2 flex-1 min-w-0">
+              {t.type === 'error' && <AlertTriangleIcon width={15} height={15} className="text-red-400 shrink-0" />}
+              {t.type === 'success' && <CheckCircleIcon width={15} height={15} className="text-emerald-400 shrink-0" />}
+              {t.type === 'info' && <SparklesIcon width={15} height={15} className="text-indigo-400 shrink-0" />}
+              <span className="text-[11px] font-semibold leading-tight break-words text-slate-100">{t.message}</span>
             </div>
-
-            {/* Modal Content */}
-            <div className="p-6 space-y-4 overflow-y-auto flex-1">
-              {/* Target Contact Email Indicator & Inline SMTP Verify */}
-              {(() => {
-                const currentEmails = editingDraftIndex === -1
-                  ? personalEmails
-                  : (companyEmailMap.get(editingDraftIndex) ?? []);
-                const primaryEmail = currentEmails[0] || (editingDraftIndex === -1 ? lead?.email : '') || '';
-                const primaryStatus = primaryEmail ? (verifiedMap.get(primaryEmail) ?? 'pending') : null;
-
-                return (
-                  <div className="border border-slate-200 bg-slate-50/60 rounded-lg p-3 space-y-2 text-xs">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div className="flex items-center gap-2">
-                        <span className="font-bold text-slate-700">Target Contact Email:</span>
-                        {primaryEmail ? (
-                          <span className="font-mono font-bold text-indigo-700 bg-white px-2 py-0.5 rounded border border-indigo-200">
-                            {primaryEmail}
-                          </span>
-                        ) : (
-                          <span className="text-amber-800 font-semibold italic">No contact email assigned</span>
-                        )}
-                        {primaryEmail ? <SmtpBadge status={primaryStatus ?? 'pending'} /> : <Badge tone="warning">⚠️ No Email Found</Badge>}
-                      </div>
-
-                      {primaryEmail && (
-                        <button
-                          type="button"
-                          onClick={() => { void handleVerifySingleEmail(primaryEmail); }}
-                          className="flex items-center gap-1 text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded hover:bg-amber-100 transition-colors"
-                          title="Re-verify SMTP status for target contact email"
-                        >
-                          ⚡ Verify SMTP
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                );
-              })()}
-
-              {/* Subject Line Input */}
-              <div className="space-y-1">
-                <label className="text-xs font-bold text-slate-700">Subject Line</label>
-                <input
-                  type="text"
-                  value={draftSubjectInput}
-                  onChange={(e) => setDraftSubjectInput(e.target.value)}
-                  className="w-full text-xs font-semibold border border-slate-300 rounded-md px-3 py-2 focus:ring-2 focus:ring-indigo-500 focus:outline-none"
-                  placeholder="Enter email subject line..."
-                />
-              </div>
-
-              {/* Editor Mode Tabs & Formatting Controls */}
-              <div className="space-y-2">
-                <div className="flex items-center justify-between border-b border-slate-200 pb-2">
-                  <label className="text-xs font-bold text-slate-700">Email Body</label>
-                  <div className="flex items-center gap-1 bg-slate-100 p-0.5 rounded-md border border-slate-200">
-                    <button
-                      type="button"
-                      onClick={() => setEditorTab('visual')}
-                      className={[
-                        'text-xs font-bold px-3 py-1 rounded transition-all',
-                        editorTab === 'visual' ? 'bg-white text-indigo-700 shadow-2xs' : 'text-slate-500 hover:text-slate-800',
-                      ].join(' ')}
-                    >
-                      Formatted Visual Preview
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setEditorTab('code')}
-                      className={[
-                        'text-xs font-bold px-3 py-1 rounded transition-all',
-                        editorTab === 'code' ? 'bg-white text-indigo-700 shadow-2xs' : 'text-slate-500 hover:text-slate-800',
-                      ].join(' ')}
-                    >
-                      Edit Raw HTML Code
-                    </button>
-                  </div>
-                </div>
-
-                {/* Rich Formatting Toolbar (Visual Mode) */}
-                {editorTab === 'visual' && (
-                  <div className="flex items-center gap-1 bg-slate-50 p-1.5 rounded-t-md border border-slate-200 border-b-0 text-xs">
-                    <button
-                      type="button"
-                      onClick={() => setDraftBodyInput((prev) => prev + ' <strong>bold text</strong>')}
-                      className="px-2 py-0.5 rounded font-bold hover:bg-slate-200 border border-slate-300 text-slate-700"
-                    >
-                      B
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setDraftBodyInput((prev) => prev + ' <em>italic text</em>')}
-                      className="px-2 py-0.5 rounded italic hover:bg-slate-200 border border-slate-300 text-slate-700"
-                    >
-                      I
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setDraftBodyInput((prev) => prev + '\n<p>New paragraph here...</p>')}
-                      className="px-2 py-0.5 rounded hover:bg-slate-200 border border-slate-300 text-slate-700 font-semibold"
-                    >
-                      + Paragraph
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setDraftBodyInput((prev) => prev + ' <a href="https://portfolio.url">Link</a>')}
-                      className="px-2 py-0.5 rounded hover:bg-slate-200 border border-slate-300 text-slate-700 font-semibold"
-                    >
-                      + Link
-                    </button>
-                  </div>
-                )}
-
-                {/* Body Content Input / View */}
-                {editorTab === 'visual' ? (
-                  <div className="border border-slate-200 rounded-b-md p-4 bg-slate-50/30 min-h-[180px] text-xs text-slate-800 leading-relaxed prose prose-slate max-w-none">
-                    <div dangerouslySetInnerHTML={{ __html: draftBodyInput }} />
-                  </div>
-                ) : (
-                  <textarea
-                    rows={8}
-                    value={draftBodyInput}
-                    onChange={(e) => setDraftBodyInput(e.target.value)}
-                    className="w-full text-xs font-mono border border-slate-300 rounded-md p-3 focus:ring-2 focus:ring-indigo-500 focus:outline-none bg-slate-900 text-slate-100"
-                    placeholder="<p>Hi Firstname,</p>..."
-                  />
-                )}
-              </div>
-
-              {/* AI Revision Assistant Box */}
-              <div className="bg-purple-50/60 border border-purple-200 rounded-lg p-3.5 space-y-2">
-                <label className="text-xs font-extrabold text-purple-950 flex items-center gap-1.5">
-                  <SparklesIcon width={13} height={13} className="text-purple-600" />
-                  ✨ Ask AI to Rewrite / Refine this Draft
-                </label>
-                <div className="flex items-center gap-2">
-                  <input
-                    type="text"
-                    placeholder="e.g. Make tone more casual, mention 70+ shipped SaaS products..."
-                    value={aiRewritePrompt}
-                    onChange={(e) => setAiRewritePrompt(e.target.value)}
-                    disabled={rewritingAi}
-                    className="flex-1 text-xs border border-purple-200 rounded-md px-3 py-1.5 focus:ring-1 focus:ring-purple-500 focus:outline-none bg-white"
-                  />
-                  <Button
-                    size="sm"
-                    onClick={() => { void handleAiRefineDraft(editingDraftIndex); }}
-                    disabled={rewritingAi || !aiRewritePrompt.trim()}
-                    className="bg-purple-600 hover:bg-purple-700 text-white text-xs px-3.5 py-1.5 font-bold shrink-0 flex items-center gap-1 disabled:opacity-50"
-                  >
-                    {rewritingAi ? <LoaderIcon width={12} height={12} className="animate-spin" /> : <SparklesIcon width={12} height={12} />}
-                    Rewrite with AI
-                  </Button>
-                </div>
-              </div>
-            </div>
-
-            {/* Modal Footer */}
-            <div className="px-6 py-3.5 border-t border-slate-200 bg-slate-50 flex items-center justify-between gap-3">
-              <button
-                type="button"
-                onClick={() => setEditingDraftIndex(null)}
-                className="text-xs font-semibold text-slate-600 hover:text-slate-800 px-3 py-1.5"
-              >
-                Cancel
-              </button>
-
-              <div className="flex items-center gap-2">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => { void handleSaveCompanyDraftEmail(editingDraftIndex, false); }}
-                  disabled={savingDraftIndex === editingDraftIndex}
-                  className="border-slate-300 text-slate-700 hover:bg-white text-xs px-3.5 py-1.5 font-semibold"
-                >
-                  Save Draft
-                </Button>
-                <Button
-                  size="sm"
-                  onClick={() => { void handleSaveCompanyDraftEmail(editingDraftIndex, true); }}
-                  disabled={savingDraftIndex === editingDraftIndex}
-                  className="bg-green-600 hover:bg-green-700 text-white text-xs px-4 py-1.5 font-bold flex items-center gap-1.5"
-                >
-                  {savingDraftIndex === editingDraftIndex ? <LoaderIcon width={12} height={12} className="animate-spin" /> : <CheckCircleIcon width={12} height={12} />}
-                  Approve & Save Draft
-                </Button>
-              </div>
-            </div>
+            <button
+              type="button"
+              onClick={() => removeToast(t.id)}
+              className="text-slate-400 hover:text-white p-0.5 rounded transition-colors shrink-0"
+              title="Dismiss notification"
+            >
+              <XIcon width={12} height={12} />
+            </button>
           </div>
-        </div>
-      )}
+        ))}
+      </div>
     </div>
   );
 }
+

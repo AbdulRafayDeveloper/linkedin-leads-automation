@@ -16,6 +16,23 @@ const NAV_CHROME_WORDS = new Set([
   'sales navigator lead page',
 ]);
 
+/** Known social / platform / generic domains we should NOT treat as company websites */
+const EXCLUDED_DOMAINS = new Set([
+  'linkedin.com', 'bing.com', 'google.com', 'yahoo.com', 'duckduckgo.com',
+  'twitter.com', 'x.com', 'facebook.com', 'instagram.com', 'youtube.com',
+  'wix.com', 'vercel.com', 'github.com', 'upwork.com', 'fiverr.com',
+  'behance.net', 'dribbble.com', 'medium.com', 'substack.com',
+  'notion.so', 'calendly.com', 'linktree.com', 'loom.com',
+]);
+
+function isDomainExcluded(domain: string): boolean {
+  const d = domain.toLowerCase();
+  for (const ex of EXCLUDED_DOMAINS) {
+    if (d === ex || d.endsWith(`.${ex}`)) return true;
+  }
+  return false;
+}
+
 function decodeHtmlEntities(text: string): string {
   const entities: Record<string, string> = {
     '&amp;': '&',
@@ -25,10 +42,10 @@ function decodeHtmlEntities(text: string): string {
     '&#39;': "'",
     '&apos;': "'",
     '&nbsp;': ' ',
-    '&rsquo;': '’',
-    '&lsquo;': '‘',
-    '&mdash;': '—',
-    '&ndash;': '–',
+    '&rsquo;': '\u2019',
+    '&lsquo;': '\u2018',
+    '&mdash;': '\u2014',
+    '&ndash;': '\u2013',
   };
   return text.replace(/&[a-zA-Z#0-9]+;/g, (match) => entities[match] ?? match);
 }
@@ -74,29 +91,89 @@ function extractEmail(text: string): string | null {
   return match ? match[0] : null;
 }
 
+/**
+ * Extracts ALL url-like strings from the text:
+ * 1. Fully qualified https?:// URLs
+ * 2. Bare domain patterns like  mantiqsoft.com / mysite.io
+ * 3. www.something.com patterns
+ *
+ * Returns a deduplicated, normalised array (all lowercased, no trailing punctuation).
+ */
+export function extractAllUrls(rawText: string): string[] {
+  const text = decodeHtmlEntities(stripHtmlTags(rawText));
+  const found = new Set<string>();
 
-function extractWebsite(text: string): string | null {
-  const matches = text.match(/https?:\/\/(?!(?:[\w-]+\.)?linkedin\.com)[^\s<>"'()[\]]+/ig);
-  if (!matches) return null;
-  const excluded = /(bing\.com|google\.com|yahoo\.com|duckduckgo\.com|twitter\.com|facebook\.com|instagram\.com|youtube\.com|wix\.com|vercel\.com|github\.com)/i;
-  for (const match of matches) {
-    const clean = match.replace(/[.,;:()[\]]+$/, '');
-    if (!excluded.test(clean)) {
-      return clean;
+  // 1. Explicit https?:// URLs
+  const explicitUrls = text.match(/https?:\/\/[^\s<>"'()\[\],;]+/gi) ?? [];
+  for (const raw of explicitUrls) {
+    const clean = raw.replace(/[.,;:)\]]+$/, '').toLowerCase();
+    try {
+      const host = new URL(clean).hostname.replace(/^www\./, '');
+      if (!isDomainExcluded(host)) found.add(clean);
+    } catch {
+      // ignore malformed
     }
   }
-  return null;
+
+  // 2. Bare domain patterns (e.g.  mantiqsoft.com  myportfolio.io)
+  //    Must have a valid TLD and NOT be a social/platform domain.
+  const bareDomains = text.match(
+    /\b(?:www\.)?([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.(?:com|io|co|net|org|dev|app|ai|tech|pk|uk|us|ca|au|de|fr|in|me|site|online|store|shop|info|biz|xyz|pro|agency))\b/gi
+  ) ?? [];
+  for (const raw of bareDomains) {
+    const clean = raw.toLowerCase().replace(/^www\./, '');
+    if (!isDomainExcluded(clean) && !clean.includes(' ')) {
+      // Normalise to https://
+      const url = `https://${clean}`;
+      found.add(url);
+    }
+  }
+
+  return Array.from(found);
+}
+
+function extractWebsite(text: string): string | null {
+  const urls = extractAllUrls(text);
+  return urls[0] ?? null;
+}
+
+function extractCompanyAndTitle(lines: string[], text: string): { companyName: string | null; jobTitle: string | null } {
+  const atMatch = text.match(/(?:current\s*:?\s*)?([A-Za-z0-9\s,&-]+?)\s+at\s+([A-Za-z0-9\s,&.-]+?)(?:\r|\n|Present|\.|$)/i);
+  if (atMatch && atMatch[1] && atMatch[2] && atMatch[2].length < 100) {
+    return {
+      jobTitle: atMatch[1].trim(),
+      companyName: atMatch[2].trim(),
+    };
+  }
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.includes(' at ') && !line.includes('http')) {
+      const parts = line.split(/\s+at\s+/i);
+      if (parts[0] && parts[1] && parts[1].length < 100) {
+        return {
+          jobTitle: parts[0].trim(),
+          companyName: parts[1].split('•')[0].split('Present')[0].trim(),
+        };
+      }
+    }
+  }
+
+  return { companyName: null, jobTitle: null };
 }
 
 export interface RegexExtractedData {
   fullName: string | null;
   email: string | null;
   websiteUrl: string | null;
+  companyName: string | null;
+  jobTitle: string | null;
+  allUrls: string[];
 }
 
 export function extractWithRegex(rawText: string): RegexExtractedData {
   if (!rawText || !rawText.trim()) {
-    return { fullName: null, email: null, websiteUrl: null };
+    return { fullName: null, email: null, websiteUrl: null, companyName: null, jobTitle: null, allUrls: [] };
   }
 
   const cleanedFull = decodeHtmlEntities(stripHtmlTags(rawText));
@@ -108,11 +185,16 @@ export function extractWithRegex(rawText: string): RegexExtractedData {
 
   const fullName = extractFullName(lines, cleanedFull);
   const email = extractEmail(cleanedFull);
-  const websiteUrl = extractWebsite(cleanedFull);
+  const allUrls = extractAllUrls(rawText);
+  const websiteUrl = allUrls[0] ?? null;
+  const compTitle = extractCompanyAndTitle(lines, cleanedFull);
 
   return {
     fullName,
     email,
     websiteUrl,
+    companyName: compTitle.companyName,
+    jobTitle: compTitle.jobTitle,
+    allUrls,
   };
 }

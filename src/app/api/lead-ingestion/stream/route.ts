@@ -69,6 +69,19 @@ export async function POST(request: NextRequest) {
             summary: '',
           };
 
+          // Map aiExtractor's CompanyPosition (roleSummary) → Mongoose schema (summary)
+          const mappedCompanies = aiData.currentCompanies.map((c) => ({
+            companyName: c.companyName,
+            jobTitle: c.jobTitle,
+            workPeriod: c.workPeriod,
+            websiteUrl: c.websiteUrl,
+            summary: c.roleSummary ?? '',
+            companyEmails: [],
+            emailSubject: null,
+            emailBody: null,
+            approved: false,
+          }));
+
           const lead = await LeadIngestion.create({
             clientId: clientDoc._id as mongoose.Types.ObjectId,
             rawText,
@@ -81,7 +94,7 @@ export async function POST(request: NextRequest) {
             email: aiData.rawEmails[0] ?? null,
             phoneNumber: aiData.rawPhones[0] ?? null,
             summary: aiData.personSummary,
-            currentCompanies: aiData.currentCompanies,
+            currentCompanies: mappedCompanies,
             // Store raw URLs from AI so Phase 2 can map them to companies
             additionalUrls: aiData.rawUrls,
             discoveredEmails: aiData.rawEmails,
@@ -95,10 +108,6 @@ export async function POST(request: NextRequest) {
             clientName: clientDoc.name,
             leadId: (lead._id as mongoose.Types.ObjectId).toString(),
           });
-
-          // Generate personal outreach email draft immediately in Phase 1
-          const { generateLeadEmail } = await import('@/services/lead-ingestion/emailGenerator');
-          await generateLeadEmail((lead._id as mongoose.Types.ObjectId).toString(), { forceRegenerate: true }).catch(() => null);
 
           send(controller, 'phase_done', { step: 1 });
           controller.close();
@@ -140,18 +149,28 @@ export async function POST(request: NextRequest) {
             allRawUrls
           );
 
-          lead.currentCompanies = mapped.map((c) => ({
-            companyName: c.companyName,
-            jobTitle: c.jobTitle,
-            workPeriod: c.workPeriod,
-            websiteUrl: c.websiteUrl,
-            summary: c.roleSummary ?? '',
-          }));
+          // Direct subdocument mutation — preserves Mongoose change-tracker
+          mapped.forEach((c, idx) => {
+            const subdoc = lead.currentCompanies[idx];
+            if (!subdoc) return;
+
+            const validMappedName = c.companyName && c.companyName !== 'Unspecified Company' && c.companyName !== 'Unknown Company' ? c.companyName : null;
+            const validMappedJob = c.jobTitle && c.jobTitle !== 'Professional' ? c.jobTitle : null;
+
+            if (validMappedName) subdoc.companyName = validMappedName;
+            if (validMappedJob) subdoc.jobTitle = validMappedJob;
+            if (c.workPeriod) subdoc.workPeriod = c.workPeriod;
+            if (c.websiteUrl) subdoc.websiteUrl = c.websiteUrl;
+            // roleSummary from mapUrlsToCompaniesWithAi maps to summary in DB
+            if (c.roleSummary && !subdoc.summary) subdoc.summary = c.roleSummary;
+          });
+          lead.markModified('currentCompanies');
           lead.portfolioUrl = portfolioUrl;
-          if (mapped[0]?.websiteUrl) lead.websiteUrl = mapped[0].websiteUrl;
+          if (lead.currentCompanies[0]?.websiteUrl) lead.websiteUrl = lead.currentCompanies[0].websiteUrl;
+          if (lead.currentCompanies[0]?.companyName) lead.companyName = lead.currentCompanies[0].companyName;
           await lead.save();
 
-          send(controller, 'mapped', { mappedCompanies: mapped, portfolioUrl });
+          send(controller, 'mapped', { mappedCompanies: lead.currentCompanies, portfolioUrl });
           send(controller, 'phase_done', { step: 2 });
           controller.close();
           return;
@@ -213,10 +232,12 @@ export async function POST(request: NextRequest) {
             lead.portfolioUrl
           );
 
-          lead.currentCompanies = (lead.currentCompanies ?? []).map((comp, idx) => ({
-            ...comp,
-            companyEmails: emailMapResult.companiesWithEmails[idx]?.companyEmails ?? comp.companyEmails ?? [],
-          }));
+          (lead.currentCompanies ?? []).forEach((compSubdoc, idx) => {
+            const newEmails = emailMapResult.companiesWithEmails[idx]?.companyEmails;
+            if (newEmails && newEmails.length > 0) {
+              compSubdoc.companyEmails = Array.from(new Set([...(compSubdoc.companyEmails ?? []), ...newEmails]));
+            }
+          });
           lead.markModified('currentCompanies');
 
           if (emailMapResult.primaryPersonalEmail) {

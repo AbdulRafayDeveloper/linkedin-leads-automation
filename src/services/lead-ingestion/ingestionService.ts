@@ -47,10 +47,9 @@ export async function startWebsiteDiscovery(
     // assign emails directly to that company's companyEmails array.
     // Always also merge into discoveredEmails for global SMTP verification.
     if (typeof companyIndex === 'number' && doc.currentCompanies[companyIndex]) {
-      const comp = doc.currentCompanies[companyIndex];
-      const existing = comp.companyEmails ?? [];
-      const merged = Array.from(new Set([...existing, ...crawl.emails]));
-      doc.currentCompanies[companyIndex] = { ...comp, companyEmails: merged };
+      const compSubdoc = doc.currentCompanies[companyIndex];
+      const existing = compSubdoc.companyEmails ?? [];
+      compSubdoc.companyEmails = Array.from(new Set([...existing, ...crawl.emails]));
       doc.markModified('currentCompanies');
 
       // Also merge into discoveredEmails for global SMTP tracking
@@ -163,7 +162,17 @@ export async function createAndProcessLead(
     websiteUrl: primary.websiteUrl,
     portfolioUrl,
     summary: aiData.personSummary,
-    currentCompanies: mapped,
+    currentCompanies: mapped.map((c) => ({
+      companyName: c.companyName,
+      jobTitle: c.jobTitle,
+      workPeriod: c.workPeriod,
+      websiteUrl: c.websiteUrl,
+      summary: c.roleSummary ?? '',
+      companyEmails: [],
+      emailSubject: null,
+      emailBody: null,
+      approved: false,
+    })),
     discoveredEmails: aiData.rawEmails,
     discoveredPhones: aiData.rawPhones,
     status: 'completed',

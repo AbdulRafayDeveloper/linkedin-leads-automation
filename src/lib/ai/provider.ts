@@ -10,6 +10,22 @@ export function getAiProviderName(): AiProviderName {
   return 'groq';
 }
 
+/**
+ * Returns the Groq model to use, sanitising legacy / removed model strings.
+ * Confirmed active on this account (as of 2026-09-10):
+ *   openai/gpt-oss-120b  – large, best quality
+ *   openai/gpt-oss-20b   – fast fallback
+ *   qwen/qwen3.8-27b     – alternative
+ */
+export function getGroqModelName(): string {
+  const model = (process.env.GROQ_MODEL || '').trim();
+  // Sanitize legacy model IDs that are no longer available on this account
+  if (!model || model === 'llama-3.3-70b-versatile' || model === 'llama3-70b-8192' || model === 'mixtral-8x7b-32768') {
+    return 'openai/gpt-oss-120b';
+  }
+  return model;
+}
+
 export async function getChatModel(): Promise<BaseChatModel> {
   const provider = getAiProviderName();
 
@@ -35,18 +51,15 @@ export async function getChatModel(): Promise<BaseChatModel> {
   const { ChatGroq } = await import('@langchain/groq');
   return new ChatGroq({
     apiKey: process.env.GROQ_API_KEY,
-    model: process.env.GROQ_MODEL || 'openai/gpt-oss-120b',
+    model: getGroqModelName(),
     temperature: 0.4,
     timeout: 8000,
   });
 }
 
 /**
- * Returns chat models in a fixed try-in-order fallback chain: Groq first,
- * then OpenAI. Unlike getChatModel() (which picks a single provider from
- * AI_PROVIDER), this is for features that should always prefer the fast/free
- * provider but transparently recover on an OpenAI-backed model if Groq
- * errors out at call time.
+ * Returns chat models in a fallback chain: primary Groq model first,
+ * then a lighter Groq backup, so failures on any single call are transparent.
  */
 export async function getFallbackChatModels(
   temperature = 0
@@ -54,24 +67,39 @@ export async function getFallbackChatModels(
   const models: BaseChatModel[] = [];
 
   const { ChatGroq } = await import('@langchain/groq');
+
+  // Primary: best available model on this account
   models.push(
     new ChatGroq({
       apiKey: process.env.GROQ_API_KEY,
-      model: process.env.GROQ_MODEL || 'openai/gpt-oss-120b',
+      model: getGroqModelName(),
       temperature,
       timeout: 15000,
     })
   );
 
-  const { ChatOpenAI } = await import('@langchain/openai');
+  // Secondary fallback: lighter/faster model
   models.push(
-    new ChatOpenAI({
-      apiKey: process.env.OPENAI_API_KEY,
-      model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+    new ChatGroq({
+      apiKey: process.env.GROQ_API_KEY,
+      model: 'openai/gpt-oss-20b',
       temperature,
       timeout: 15000,
     })
   );
+
+  // Tertiary: OpenAI if key present
+  if (process.env.OPENAI_API_KEY) {
+    const { ChatOpenAI } = await import('@langchain/openai');
+    models.push(
+      new ChatOpenAI({
+        apiKey: process.env.OPENAI_API_KEY,
+        model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+        temperature,
+        timeout: 15000,
+      })
+    );
+  }
 
   return models;
 }
