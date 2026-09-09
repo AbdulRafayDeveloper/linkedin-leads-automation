@@ -137,6 +137,13 @@ const LeadIngestionSchema = new Schema<LeadIngestionDocument>(
   { timestamps: true }
 );
 
+LeadIngestionSchema.index({ fullName: 1, companyName: 1 });
+LeadIngestionSchema.index({ clientId: 1, createdAt: -1 });
+LeadIngestionSchema.index({ approved: 1, emailValidationStatus: 1 });
+LeadIngestionSchema.index({ 'currentCompanies.companyName': 1 });
+LeadIngestionSchema.index({ 'currentCompanies.companyEmails': 1 });
+LeadIngestionSchema.index({ discoveredEmails: 1 });
+
 export const LeadIngestion: Model<LeadIngestionDocument> =
   (mongoose.models.LeadIngestion as Model<LeadIngestionDocument>) ||
   mongoose.model<LeadIngestionDocument>('LeadIngestion', LeadIngestionSchema);

@@ -216,8 +216,7 @@ function getCategorizedEmails(
 // ── Badges & Step Indicators ──────────────────────────────────────────────────
 
 function SmtpBadge({ status }: { status: VerifiedEmailItem['status'] }) {
-  if (status === 'valid') return <Badge tone="success">✓ Verified SMTP</Badge>;
-  if (status === 'risky') return <Badge tone="success">⚡ Risky/Catch-All SMTP</Badge>;
+  if (status === 'valid' || status === 'risky') return <Badge tone="success">✓ Verified SMTP</Badge>;
   if (status === 'invalid') return <Badge tone="danger">❌ Email Not Exist</Badge>;
   return <Badge tone="warning">⚡ SMTP Not Verified</Badge>;
 }

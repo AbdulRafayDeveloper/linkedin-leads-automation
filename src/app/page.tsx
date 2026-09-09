@@ -127,7 +127,7 @@ export default function Home() {
               emails.
             </p>
           </div>
-          <Link href="/dashboard" className={buttonClasses('outline', 'sm', 'mt-1 self-start')}>
+          <Link href="/my-leads" className={buttonClasses('outline', 'sm', 'mt-1 self-start')}>
             View My Leads
             <ArrowRightIcon width={14} height={14} />
           </Link>

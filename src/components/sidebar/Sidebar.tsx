@@ -12,7 +12,7 @@ const NAV_ITEMS = [
   { href: '/lead-ingestion/approved', label: 'Approved Unsent Pool', icon: CheckCircleIcon },
   { href: '/lead-ingestion/campaigns', label: 'Email Campaigns', icon: SparklesIcon },
   { href: '/lead-ingestion/prompt', label: 'Global AI Prompt', icon: EditIcon },
-  { href: '/dashboard', label: 'My Ingested Leads', icon: UsersIcon },
+  { href: '/my-leads', label: 'My Leads', icon: UsersIcon },
 ];
 
 function Brand() {

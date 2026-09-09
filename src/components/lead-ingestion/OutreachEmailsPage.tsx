@@ -589,11 +589,22 @@ function EmailEditModal({
         {/* Header */}
         <div className="flex items-center justify-between border-b border-slate-200 pb-3">
           <div>
-            <h3 className="text-base font-extrabold text-slate-900 flex items-center gap-2">
-              🏢 {emailItem.companyName} &mdash; Edit & Preview Outreach
+            <h3 className="text-lg font-extrabold text-slate-900 leading-snug">
+              {emailItem.candidateName || 'Candidate Profile'}
             </h3>
-            <div className="text-xs text-indigo-600 font-semibold mt-0.5">
-              Candidate: {emailItem.candidateName} ({emailItem.clientName})
+            <div className="flex items-center gap-2 mt-1 flex-wrap text-xs">
+              <span className="font-mono text-indigo-600 font-extrabold text-xs">
+                {getDbSerialNumber(emailItem.clientName)}
+              </span>
+              {emailItem.companyIndex === -1 ? (
+                <span className="font-extrabold text-blue-800 bg-blue-50 border border-blue-200 px-2 py-0.5 rounded whitespace-nowrap shrink-0">
+                  👤 Personal Profile
+                </span>
+              ) : (
+                <span className="font-extrabold text-purple-800 bg-purple-50 border border-purple-200 px-2 py-0.5 rounded">
+                  🏢 {emailItem.companyName}
+                </span>
+              )}
             </div>
           </div>
           <button
@@ -620,6 +631,47 @@ function EmailEditModal({
         )}
 
         <div className="space-y-4 text-xs">
+          {/* ── 0. CLIENT SUMMARY FROM DATABASE (As shown in Client Detail Page) ── */}
+          {(() => {
+            const mainSummary = currentLead.summary?.trim();
+            const targetComp = emailItem.companyIndex >= 0 ? currentLead.currentCompanies?.[emailItem.companyIndex] : null;
+            const roleSummary = targetComp?.summary?.trim();
+            const jobTitle = targetComp?.jobTitle?.trim() || emailItem.jobTitle;
+
+            if (!mainSummary && !roleSummary && !jobTitle) return null;
+
+            return (
+              <div className="bg-gradient-to-r from-slate-50 to-indigo-50/40 border border-indigo-200/80 rounded-lg p-3.5 space-y-2.5 shadow-2xs">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[10px] font-extrabold text-indigo-900 uppercase tracking-wider flex items-center gap-1.5">
+                    <SparklesIcon width={12} height={12} className="text-indigo-600" />
+                    Client Intelligence & Database Summary
+                  </span>
+                  {jobTitle && (
+                    <span className="text-[11px] font-bold text-slate-700 bg-white border border-slate-200 px-2 py-0.5 rounded shadow-2xs">
+                      {jobTitle}
+                    </span>
+                  )}
+                </div>
+
+                {mainSummary && (
+                  <p className="text-xs text-slate-700 font-medium leading-relaxed bg-white/90 border border-slate-200/80 rounded-md p-2.5">
+                    {mainSummary}
+                  </p>
+                )}
+
+                {roleSummary && (
+                  <div className="text-xs text-slate-700 bg-white/90 border border-indigo-100 rounded-md p-2.5">
+                    <span className="font-extrabold text-indigo-900 block mb-0.5">
+                      Role Summary ({emailItem.companyName}):
+                    </span>
+                    <p className="leading-relaxed">{roleSummary}</p>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+
           {/* ── 1. DIRECT WEB CRAWLING IN MODAL ────────────────────────────── */}
           <div className="bg-purple-50/50 border border-purple-200 rounded-lg p-3 space-y-2">
             <label className="text-[10px] font-extrabold text-purple-900 uppercase tracking-wider flex items-center gap-1.5">
@@ -857,13 +909,23 @@ function EmailEditModal({
 
 // ── Compact Email Card ────────────────────────────────────────────────────────
 
+function getDbSerialNumber(clientName?: string | null, fallbackIndex?: number): string {
+  if (clientName) {
+    const match = clientName.match(/#\d+/);
+    if (match) return `id -${match[0]}`;
+  }
+  return fallbackIndex ? `id -#${fallbackIndex}` : 'id -#1';
+}
+
 function CompactEmailCard({
   emailItem,
   leadDoc,
+  itemNumber,
   onLeadUpdated,
 }: {
   emailItem: GeneratedEmailItem;
   leadDoc: LeadIngestionRecord;
+  itemNumber?: number;
   onLeadUpdated: (updated: LeadIngestionRecord) => void;
 }) {
   const router = useRouter();
@@ -901,23 +963,41 @@ function CompactEmailCard({
       <Card className="border border-slate-200 shadow-2xs hover:shadow-md transition-all bg-white flex flex-col justify-between overflow-hidden">
         <CardHeader
           title={
-            <div className="flex items-start justify-between gap-2 w-full">
-              <div>
-                <div className="text-sm font-extrabold text-slate-900 leading-snug">
-                  🏢 {emailItem.companyName}
+            <div className="flex items-start justify-between gap-3 w-full">
+              <div className="min-w-0 flex-1 space-y-1">
+                {/* Candidate Name (Line-clamped for long names) */}
+                <div className="text-sm font-extrabold text-slate-900 leading-snug line-clamp-2">
+                  {emailItem.candidateName || 'Candidate Profile'}
                 </div>
-                <div className="text-xs text-indigo-600 font-semibold mt-0.5">
-                  Candidate: {emailItem.candidateName}
+
+                {/* Subtitle: DB Serial Number (e.g. #17) */}
+                <div className="text-[11px] font-mono font-extrabold text-indigo-600">
+                  {getDbSerialNumber(emailItem.clientName, itemNumber)}
+                </div>
+
+                {/* Dedicated Profile Type Badge Row */}
+                <div className="pt-0.5">
+                  {emailItem.companyIndex === -1 ? (
+                    <span className="inline-flex items-center gap-1 text-[10px] font-extrabold text-blue-800 bg-blue-50 border border-blue-200 px-2 py-0.5 rounded-full whitespace-nowrap shrink-0">
+                      👤 Personal Profile
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 text-[10px] font-extrabold text-purple-800 bg-purple-50 border border-purple-200 px-2 py-0.5 rounded-full truncate max-w-full">
+                      🏢 {emailItem.companyName}
+                    </span>
+                  )}
                 </div>
               </div>
 
               <div className="flex items-center gap-1.5 shrink-0">
                 {!emailItem.targetEmail ? (
                   <Badge tone="warning">⚠️ No Email Found</Badge>
-                ) : emailItem.emailStatus !== 'valid' ? (
-                  <Badge tone="warning">⚡ SMTP Not Verified</Badge>
-                ) : (
+                ) : emailItem.emailStatus === 'valid' || emailItem.emailStatus === 'risky' ? (
                   <Badge tone="success">✓ SMTP Verified</Badge>
+                ) : emailItem.emailStatus === 'invalid' ? (
+                  <Badge tone="danger">❌ Email Not Exist</Badge>
+                ) : (
+                  <Badge tone="warning">⚡ SMTP Not Verified</Badge>
                 )}
                 <button
                   type="button"
@@ -1018,9 +1098,9 @@ export default function OutreachEmailsPage() {
   // Server-Side & Local Filter States
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedClientId, setSelectedClientId] = useState<string>('all');
-  const [approvalFilter, setApprovalFilter] = useState<'approved' | 'draft' | 'all'>('all');
+  const [approvalFilter, setApprovalFilter] = useState<'approved' | 'draft' | 'all'>('draft');
   const [sendStatusFilter, setSendStatusFilter] = useState<'all' | 'no_contact_email' | 'pending' | 'in_progress' | 'delivered' | 'opened' | 'failed'>('all');
-  const [smtpFilter, setSmtpFilter] = useState<'all' | 'valid' | 'unverified' | 'invalid' | 'no_contact_email'>('all');
+  const [smtpFilter, setSmtpFilter] = useState<'all' | 'valid' | 'unverified' | 'invalid' | 'no_contact_email'>('valid');
 
   // Server-Side Pagination State
   const [page, setPage] = useState(1);
@@ -1038,11 +1118,13 @@ export default function OutreachEmailsPage() {
 
     try {
       const approvedParam = approvalFilter === 'approved' ? 'true' : approvalFilter === 'draft' ? 'false' : 'all';
+      const effectiveEmailStatus = sendStatusFilter !== 'all' ? sendStatusFilter : smtpFilter !== 'all' ? smtpFilter : 'all';
+
       const params = new URLSearchParams({
         page: targetPage.toString(),
         limit: '12',
         approved: approvedParam,
-        emailStatus: sendStatusFilter,
+        emailStatus: effectiveEmailStatus,
         clientId: selectedClientId,
         ...(searchQuery.trim() ? { search: searchQuery.trim() } : {}),
       });
@@ -1080,7 +1162,7 @@ export default function OutreachEmailsPage() {
     }, 300);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchQuery, selectedClientId, approvalFilter, sendStatusFilter]);
+  }, [searchQuery, selectedClientId, approvalFilter, sendStatusFilter, smtpFilter]);
 
   // Infinite Scroll Trigger
   const handleObserver = useCallback(
@@ -1309,9 +1391,10 @@ export default function OutreachEmailsPage() {
       ) : (
         <>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-            {filteredGeneratedEmailItems.map(({ item, leadDoc }) => (
+            {filteredGeneratedEmailItems.map(({ item, leadDoc }, idx) => (
               <CompactEmailCard
                 key={item.id}
+                itemNumber={idx + 1}
                 emailItem={item}
                 leadDoc={leadDoc}
                 onLeadUpdated={handleLeadUpdated}
