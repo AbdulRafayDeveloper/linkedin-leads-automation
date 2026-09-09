@@ -32,6 +32,37 @@ import {
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
+const EMAIL_REGEX = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+function isValidEmail(email: string): boolean {
+  return EMAIL_REGEX.test(email.trim().toLowerCase());
+}
+
+function checkApprovalEligibility(
+  availableEmails: string[],
+  verifiedMap: Map<string, VerifiedEmailItem['status']>
+): { ok: boolean; error?: string } {
+  if (availableEmails.length === 0) {
+    return {
+      ok: false,
+      error: 'Cannot approve draft! No contact emails found. Please add at least one email with verified SMTP.',
+    };
+  }
+
+  const problematicEmails = availableEmails.filter((em) => {
+    const s = verifiedMap.get(em.toLowerCase());
+    return s !== 'valid' && s !== 'risky';
+  });
+
+  if (problematicEmails.length > 0) {
+    return {
+      ok: false,
+      error: `Cannot approve draft! Unverified or invalid email(s) found in contact list (${problematicEmails.join(', ')}). Please verify SMTP or delete unverified/invalid email(s) first before approving.`,
+    };
+  }
+
+  return { ok: true };
+}
+
 interface GeneratedEmailItem {
   id: string;
   leadId: string;
@@ -69,55 +100,82 @@ function SendStatusBadge({ status }: { status: GeneratedEmailItem['sendStatus'] 
 function RichTextEditor({
   initialValue,
   onChange,
+  readOnly = false,
 }: {
   initialValue: string;
   onChange: (html: string) => void;
+  readOnly?: boolean;
 }) {
   const editorRef = useRef<HTMLDivElement>(null);
+  const isTypingRef = useRef(false);
+
+  useEffect(() => {
+    if (editorRef.current && !isTypingRef.current) {
+      if (editorRef.current.innerHTML !== initialValue) {
+        editorRef.current.innerHTML = initialValue || '';
+      }
+    }
+  }, [initialValue]);
+
+  const handleInput = () => {
+    if (readOnly || !editorRef.current) return;
+    isTypingRef.current = true;
+    const html = editorRef.current.innerHTML;
+    onChange(html);
+    setTimeout(() => {
+      isTypingRef.current = false;
+    }, 100);
+  };
 
   const executeCmd = (command: string, value = '') => {
+    if (readOnly || !editorRef.current) return;
+    editorRef.current.focus();
     document.execCommand(command, false, value);
-    if (editorRef.current) {
-      onChange(editorRef.current.innerHTML);
-    }
+    handleInput();
   };
 
   return (
-    <div className="border border-slate-200 rounded-md overflow-hidden bg-white">
-      <div className="flex flex-wrap items-center gap-1 bg-slate-50 border-b border-slate-200 px-3 py-2 text-xs">
-        <button
-          type="button"
-          onClick={() => executeCmd('bold')}
-          className="px-2 py-1 font-bold rounded hover:bg-slate-200 text-slate-700"
-          title="Bold"
-        >
-          B
-        </button>
-        <button
-          type="button"
-          onClick={() => executeCmd('italic')}
-          className="px-2 py-1 italic rounded hover:bg-slate-200 text-slate-700"
-          title="Italic"
-        >
-          I
-        </button>
-        <button
-          type="button"
-          onClick={() => executeCmd('underline')}
-          className="px-2 py-1 underline rounded hover:bg-slate-200 text-slate-700"
-          title="Underline"
-        >
-          U
-        </button>
-      </div>
+    <div className={`border rounded-md overflow-hidden transition-colors ${readOnly ? 'border-slate-200 bg-slate-50' : 'border-slate-300 focus-within:border-indigo-500 focus-within:ring-1 focus-within:ring-indigo-500 bg-white'}`}>
+      {!readOnly && (
+        <div className="flex flex-wrap items-center gap-1 bg-slate-50 border-b border-slate-200 px-3 py-2 text-xs select-none">
+          <button
+            type="button"
+            onClick={() => executeCmd('bold')}
+            className="px-2 py-1 font-bold rounded hover:bg-slate-200 text-slate-700"
+            title="Bold"
+          >
+            B
+          </button>
+          <button
+            type="button"
+            onClick={() => executeCmd('italic')}
+            className="px-2 py-1 italic rounded hover:bg-slate-200 text-slate-700"
+            title="Italic"
+          >
+            I
+          </button>
+          <button
+            type="button"
+            onClick={() => executeCmd('underline')}
+            className="px-2 py-1 underline rounded hover:bg-slate-200 text-slate-700"
+            title="Underline"
+          >
+            U
+          </button>
+        </div>
+      )}
 
       <div
         ref={editorRef}
-        contentEditable
+        contentEditable={!readOnly}
         suppressContentEditableWarning
-        onInput={(e) => onChange((e.target as HTMLDivElement).innerHTML)}
-        className="min-h-[160px] max-h-[300px] overflow-y-auto p-4 text-sm text-slate-700 focus:outline-none leading-relaxed"
-        dangerouslySetInnerHTML={{ __html: initialValue }}
+        onInput={handleInput}
+        onBlur={() => {
+          isTypingRef.current = false;
+        }}
+        className={`min-h-[180px] p-4 text-sm leading-relaxed focus:outline-none ${
+          readOnly ? 'bg-slate-50 text-slate-600 cursor-not-allowed select-text' : 'bg-white text-slate-800'
+        }`}
       />
     </div>
   );
@@ -348,12 +406,32 @@ function EmailEditModal({
   onLeadUpdated: (updated: LeadIngestionRecord) => void;
 }) {
   const [currentLead, setCurrentLead] = useState<LeadIngestionRecord>(leadDoc);
-  const [targetEmailInput, setTargetEmailInput] = useState(emailItem.targetEmail);
-  const [multipleEmailsInput, setMultipleEmailsInput] = useState('');
+  const [isAddingEmail, setIsAddingEmail] = useState(false);
+  const [addingEmailValue, setAddingEmailValue] = useState('');
+  const [editingEmailKey, setEditingEmailKey] = useState<string | null>(null);
+  const [editingEmailValue, setEditingEmailValue] = useState('');
   const [subjectInput, setSubjectInput] = useState(emailItem.subject);
   const [bodyHtmlInput, setBodyHtmlInput] = useState(emailItem.bodyHtml);
   const [isApproved, setIsApproved] = useState(emailItem.approved);
   const [refinePrompt, setRefinePrompt] = useState('');
+
+  // Toast Notification State inside Modal Window
+  const [toasts, setToasts] = useState<Array<{ id: string; type: 'success' | 'error' | 'info'; message: string }>>([]);
+
+  const showToast = (message: string, type: 'success' | 'error' | 'info' = 'info') => {
+    const toastId = `${Date.now()}-${Math.random()}`;
+    setToasts((prev) => [...prev, { id: toastId, type, message }]);
+    setTimeout(() => {
+      setToasts((prev) => prev.filter((t) => t.id !== toastId));
+    }, 4000);
+  };
+
+  const removeToast = (toastId: string) => {
+    setToasts((prev) => prev.filter((t) => t.id !== toastId));
+  };
+
+  // Check if email has entered campaign sending execution (once in campaign, cannot return to draft)
+  const isInCampaign = emailItem.sendStatus !== 'pending' && emailItem.sendStatus !== 'no_contact_email';
 
   // Web Crawling state inside modal
   const compObj = currentLead.currentCompanies?.[emailItem.companyIndex];
@@ -361,33 +439,28 @@ function EmailEditModal({
     ? (currentLead.portfolioUrl || currentLead.websiteUrl || '')
     : (compObj?.websiteUrl || currentLead.websiteUrl || '');
   const [websiteUrlInput, setWebsiteUrlInput] = useState(initialWebUrl);
+  const [isEditingWebUrl, setIsEditingWebUrl] = useState(false);
   const [crawling, setCrawling] = useState(false);
   const [verifyingEmail, setVerifyingEmail] = useState<string | null>(null);
 
   const [saving, setSaving] = useState(false);
   const [refining, setRefining] = useState(false);
   const [copiedAll, setCopiedAll] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
   const verifiedMap = new Map<string, VerifiedEmailItem['status']>();
   (currentLead.verifiedEmails ?? []).forEach((v) => verifiedMap.set(v.email, v.status));
 
-  // Determine current list of emails for this specific box
+  // Determine current list of emails for this specific box (Personal or Target Company)
   const availableEmails: string[] = Array.from(new Set(
     emailItem.companyIndex === -1
       ? (currentLead.discoveredEmails ?? (currentLead.email ? [currentLead.email] : []))
       : (compObj?.companyEmails ?? [])
   ));
 
-  const targetStatus = targetEmailInput.trim() ? (verifiedMap.get(targetEmailInput.trim().toLowerCase()) ?? 'pending') : null;
-
   // Handler: Crawl Website directly inside Modal
   const handleCrawlWebsiteInModal = async () => {
-    if (!websiteUrlInput.trim()) return;
+    if (!websiteUrlInput.trim() || isApproved) return;
     setCrawling(true);
-    setError(null);
-    setSuccessMsg(null);
     try {
       const updatedCompanies = [...(currentLead.currentCompanies ?? [])];
       if (emailItem.companyIndex !== -1 && updatedCompanies[emailItem.companyIndex]) {
@@ -407,19 +480,16 @@ function EmailEditModal({
 
       setCurrentLead(crawlRes.result);
       onLeadUpdated(crawlRes.result);
+      setIsEditingWebUrl(false);
 
       const freshComp = crawlRes.result.currentCompanies?.[emailItem.companyIndex];
       const freshEmails = emailItem.companyIndex === -1
         ? (crawlRes.result.discoveredEmails ?? [])
         : (freshComp?.companyEmails ?? []);
 
-      if (freshEmails.length > 0 && !targetEmailInput) {
-        setTargetEmailInput(freshEmails[0]);
-      }
-
-      setSuccessMsg(`✓ Extracted emails from ${websiteUrlInput.trim()}! Total: ${freshEmails.length} email(s).`);
+      showToast(`✓ Extracted emails from ${websiteUrlInput.trim()}! Total: ${freshEmails.length} email(s).`, 'success');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to crawl website');
+      showToast(err instanceof Error ? err.message : 'Failed to crawl website', 'error');
     } finally {
       setCrawling(false);
     }
@@ -427,9 +497,8 @@ function EmailEditModal({
 
   // Handler: Single Email SMTP Re-verify directly inside Modal
   const handleVerifyEmailInModal = async (emailToVerify: string) => {
-    if (!emailToVerify.trim()) return;
+    if (!emailToVerify.trim() || isApproved) return;
     setVerifyingEmail(emailToVerify);
-    setError(null);
     try {
       const res = await updateLeadDetailsApi(emailItem.leadId, {
         ...(emailItem.companyIndex === -1
@@ -438,53 +507,132 @@ function EmailEditModal({
       });
       setCurrentLead(res.result);
       onLeadUpdated(res.result);
-      setSuccessMsg(`✓ SMTP verification completed for ${emailToVerify.trim()}`);
+      showToast(`✓ SMTP verification completed for ${emailToVerify.trim()}`, 'success');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'SMTP verification failed');
+      showToast(err instanceof Error ? err.message : 'SMTP verification failed', 'error');
     } finally {
       setVerifyingEmail(null);
     }
   };
 
-  // Handler: Add Multiple Emails & SMTP Verify directly inside Modal
-  const handleAddMultipleEmails = async () => {
-    if (!multipleEmailsInput.trim()) return;
+  // Handler: Delete email address directly inside Modal
+  const handleDeleteEmailInModal = async (emailToDelete: string) => {
+    if (isApproved) return;
     setSaving(true);
-    setError(null);
     try {
-      const parsed = multipleEmailsInput
-        .split(/[,;\s]+/)
-        .map((e) => e.trim().toLowerCase())
-        .filter((e) => e.includes('@'));
-
-      if (parsed.length === 0) {
-        setError('No valid email addresses found in input.');
-        setSaving(false);
-        return;
-      }
-
+      const targetEmail = emailToDelete.toLowerCase().trim();
       const updatedCompanies = [...(currentLead.currentCompanies ?? [])];
+
       if (emailItem.companyIndex !== -1 && updatedCompanies[emailItem.companyIndex]) {
         const existing = updatedCompanies[emailItem.companyIndex].companyEmails ?? [];
-        updatedCompanies[emailItem.companyIndex].companyEmails = Array.from(new Set([...existing, ...parsed]));
+        updatedCompanies[emailItem.companyIndex].companyEmails = existing.filter(
+          (e) => e.toLowerCase() !== targetEmail
+        );
       }
 
       const res = await updateLeadDetailsApi(emailItem.leadId, {
         ...(emailItem.companyIndex !== -1
-          ? { currentCompanies: updatedCompanies, verifyCompanyEmails: parsed }
-          : { addManualEmail: parsed.join(','), discoveredEmails: Array.from(new Set([...(currentLead.discoveredEmails ?? []), ...parsed])) }),
+          ? { currentCompanies: updatedCompanies }
+          : {
+              discoveredEmails: (currentLead.discoveredEmails ?? []).filter(
+                (e) => e.toLowerCase() !== targetEmail
+              ),
+            }),
       });
 
       setCurrentLead(res.result);
       onLeadUpdated(res.result);
-
-      if (!targetEmailInput && parsed[0]) {
-        setTargetEmailInput(parsed[0]);
-      }
-      setMultipleEmailsInput('');
-      setSuccessMsg(`✓ Added & SMTP-verified ${parsed.length} email address(es)!`);
+      showToast(`Deleted ${targetEmail}`, 'info');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to add emails');
+      showToast(err instanceof Error ? err.message : 'Failed to delete email', 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Handler: Add New Email & Auto-Verify SMTP directly inside Modal
+  const handleSaveAddEmail = async () => {
+    const rawVal = addingEmailValue.trim().toLowerCase();
+    if (isApproved || !rawVal) return;
+
+    if (!isValidEmail(rawVal)) {
+      showToast(`"${rawVal}" is not a valid email address! (e.g. name@domain.com)`, 'error');
+      return;
+    }
+
+    setSaving(true);
+    try {
+      const updatedCompanies = [...(currentLead.currentCompanies ?? [])];
+      if (emailItem.companyIndex !== -1 && updatedCompanies[emailItem.companyIndex]) {
+        const existing = updatedCompanies[emailItem.companyIndex].companyEmails ?? [];
+        updatedCompanies[emailItem.companyIndex].companyEmails = Array.from(
+          new Set([...existing.filter((e) => e.toLowerCase() !== rawVal), rawVal])
+        );
+      }
+
+      const res = await updateLeadDetailsApi(emailItem.leadId, {
+        ...(emailItem.companyIndex !== -1
+          ? { currentCompanies: updatedCompanies, verifyCompanyEmails: [rawVal] }
+          : { addManualEmail: rawVal, discoveredEmails: Array.from(new Set([...(currentLead.discoveredEmails ?? []).filter((e) => e.toLowerCase() !== rawVal), rawVal])) }),
+      });
+
+      setCurrentLead(res.result);
+      onLeadUpdated(res.result);
+      setAddingEmailValue('');
+      setIsAddingEmail(false);
+      showToast(`Added ${rawVal}! Verifying SMTP...`, 'success');
+
+      // Auto-verify SMTP for new email
+      void handleVerifyEmailInModal(rawVal);
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Failed to add email', 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Handler: Edit Email string & Auto Re-Verify SMTP directly inside Modal
+  const handleSaveEditEmail = async (oldEmail: string) => {
+    const newVal = editingEmailValue.trim().toLowerCase();
+    const oldVal = oldEmail.trim().toLowerCase();
+    if (isApproved || !newVal) return;
+
+    if (!isValidEmail(newVal)) {
+      showToast(`"${newVal}" is not a valid email address! (e.g. name@domain.com)`, 'error');
+      return;
+    }
+
+    setSaving(true);
+    try {
+      const updatedCompanies = [...(currentLead.currentCompanies ?? [])];
+
+      if (emailItem.companyIndex !== -1 && updatedCompanies[emailItem.companyIndex]) {
+        const existing = updatedCompanies[emailItem.companyIndex].companyEmails ?? [];
+        updatedCompanies[emailItem.companyIndex].companyEmails = existing.map((e) =>
+          e.toLowerCase() === oldVal ? newVal : e
+        );
+      }
+
+      const updatedDiscovered = (currentLead.discoveredEmails ?? []).map((e) =>
+        e.toLowerCase() === oldVal ? newVal : e
+      );
+
+      const res = await updateLeadDetailsApi(emailItem.leadId, {
+        ...(emailItem.companyIndex !== -1
+          ? { currentCompanies: updatedCompanies, verifyCompanyEmails: [newVal] }
+          : { discoveredEmails: updatedDiscovered, forceVerifyEmail: newVal }),
+      });
+
+      setCurrentLead(res.result);
+      onLeadUpdated(res.result);
+      setEditingEmailKey(null);
+      setEditingEmailValue('');
+      showToast(`Updated email to ${newVal}! Re-verifying SMTP...`, 'success');
+
+      // Auto re-verify SMTP for edited email
+      void handleVerifyEmailInModal(newVal);
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Failed to edit email', 'error');
     } finally {
       setSaving(false);
     }
@@ -498,29 +646,70 @@ function EmailEditModal({
       const fullText = `Subject: ${subjectInput}\n\n${textBody}`;
       await navigator.clipboard.writeText(fullText);
       setCopiedAll(true);
+      showToast('Copied full email subject & body to clipboard!', 'success');
       setTimeout(() => setCopiedAll(false), 1500);
-    } catch { /* ignore */ }
+    } catch {
+      showToast('Failed to copy to clipboard', 'error');
+    }
   };
 
-  const handleToggleModalApprove = () => {
-    setError(null);
+  const handleToggleModalApprove = async () => {
+    if (isInCampaign) {
+      showToast('Cannot return to draft! This email is already in an active campaign flow.', 'error');
+      return;
+    }
+
     if (!isApproved) {
-      if (!targetEmailInput.trim() || targetStatus !== 'valid') {
-        setError('Cannot approve draft! Target contact email must be selected and SMTP verified as valid before approval.');
+      const eligibility = checkApprovalEligibility(availableEmails, verifiedMap);
+      if (!eligibility.ok) {
+        showToast(eligibility.error!, 'error');
         return;
       }
     }
-    setIsApproved(!isApproved);
+
+    const nextApproved = !isApproved;
+    setSaving(true);
+    try {
+      const companies = [...(currentLead.currentCompanies ?? [])];
+      if (emailItem.companyIndex !== -1 && companies[emailItem.companyIndex]) {
+        companies[emailItem.companyIndex].approved = nextApproved;
+      }
+
+      const res = await updateLeadDetailsApi(emailItem.leadId, {
+        ...(emailItem.companyIndex !== -1
+          ? {
+              currentCompanies: companies,
+              approved: companies[0]?.approved ?? nextApproved,
+            }
+          : {
+              approved: nextApproved,
+            }),
+      });
+
+      setCurrentLead(res.result);
+      setIsApproved(nextApproved);
+      onLeadUpdated(res.result);
+      showToast(
+        nextApproved ? '✓ Draft approved & saved to database!' : 'Draft status returned to unapproved in database',
+        nextApproved ? 'success' : 'info'
+      );
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Failed to update approval status', 'error');
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handleSaveModalEdits = async () => {
     setSaving(true);
-    setError(null);
     try {
-      if (isApproved && (!targetEmailInput.trim() || targetStatus !== 'valid')) {
-        setError('Cannot approve draft! Target contact email must be selected and SMTP verified as valid before approval.');
-        setSaving(false);
-        return;
+      if (isApproved) {
+        const eligibility = checkApprovalEligibility(availableEmails, verifiedMap);
+        if (!eligibility.ok) {
+          showToast(eligibility.error!, 'error');
+          setSaving(false);
+          return;
+        }
       }
 
       const companies = [...(currentLead.currentCompanies ?? [])];
@@ -529,14 +718,6 @@ function EmailEditModal({
         companies[emailItem.companyIndex].emailSubject = subjectInput;
         companies[emailItem.companyIndex].emailBody = bodyHtmlInput;
         companies[emailItem.companyIndex].approved = isApproved;
-
-        if (targetEmailInput.trim()) {
-          const cleanEmail = targetEmailInput.trim().toLowerCase();
-          const compEmails = companies[emailItem.companyIndex].companyEmails ?? [];
-          if (!compEmails.includes(cleanEmail)) {
-            companies[emailItem.companyIndex].companyEmails = [cleanEmail, ...compEmails];
-          }
-        }
       }
 
       const res = await updateLeadDetailsApi(emailItem.leadId, {
@@ -546,38 +727,38 @@ function EmailEditModal({
               emailSubject: companies[0]?.emailSubject ?? subjectInput,
               emailBody: companies[0]?.emailBody ?? bodyHtmlInput,
               approved: companies[0]?.approved ?? isApproved,
-              ...(targetEmailInput.trim() ? { verifyCompanyEmails: [targetEmailInput.trim()] } : {}),
             }
           : {
               emailSubject: subjectInput,
               emailBody: bodyHtmlInput,
               approved: isApproved,
-              ...(targetEmailInput.trim() ? { forceVerifyEmail: targetEmailInput.trim() } : {}),
             }),
       });
 
       onLeadUpdated(res.result);
-      onClose();
+      showToast('✓ Email saved & updated successfully!', 'success');
+      setTimeout(() => onClose(), 600);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save changes');
+      showToast(err instanceof Error ? err.message : 'Failed to save changes', 'error');
     } finally {
       setSaving(false);
     }
   };
 
   const handleImproveWithAi = async () => {
+    if (isApproved) return;
     const promptText = refinePrompt.trim();
     if (!promptText) return;
     setRefining(true);
-    setError(null);
     try {
       const response = await refineLeadEmailApi(emailItem.leadId, promptText);
       onLeadUpdated(response.result);
       setSubjectInput(response.result.emailSubject || subjectInput);
       setBodyHtmlInput(response.result.emailBody || bodyHtmlInput);
       setRefinePrompt('');
+      showToast('✨ AI refined email content successfully!', 'success');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'AI refinement failed');
+      showToast(err instanceof Error ? err.message : 'AI refinement failed', 'error');
     } finally {
       setRefining(false);
     }
@@ -585,6 +766,39 @@ function EmailEditModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-xs overflow-y-auto">
+      {/* Floating Toast Notification Stack inside Modal */}
+      {toasts.length > 0 && (
+        <div className="fixed top-6 right-6 z-[100] flex flex-col gap-2 max-w-sm w-full pointer-events-none">
+          {toasts.map((t) => (
+            <div
+              key={t.id}
+              className={[
+                'pointer-events-auto flex items-center justify-between p-3.5 rounded-lg border text-xs font-semibold shadow-2xl transition-all animate-in slide-in-from-top-2',
+                t.type === 'success'
+                  ? 'bg-slate-900 text-white border-emerald-500/50 shadow-emerald-950/20'
+                  : t.type === 'error'
+                  ? 'bg-slate-900 text-white border-red-500/50 shadow-red-950/20'
+                  : 'bg-slate-900 text-white border-indigo-500/50 shadow-slate-950/20',
+              ].join(' ')}
+            >
+              <div className="flex items-center gap-2">
+                {t.type === 'success' && <CheckCircleIcon width={15} height={15} className="text-emerald-400 shrink-0" />}
+                {t.type === 'error' && <AlertTriangleIcon width={15} height={15} className="text-red-400 shrink-0" />}
+                {t.type === 'info' && <SparklesIcon width={15} height={15} className="text-indigo-400 shrink-0" />}
+                <span className="leading-snug">{t.message}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => removeToast(t.id)}
+                className="text-slate-400 hover:text-white p-0.5 ml-2 rounded transition-colors"
+              >
+                <XIcon width={12} height={12} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
       <div className="relative w-full max-w-3xl rounded-xl bg-white p-6 shadow-2xl space-y-4 max-h-[92vh] overflow-y-auto border border-slate-200">
         {/* Header */}
         <div className="flex items-center justify-between border-b border-slate-200 pb-3">
@@ -616,17 +830,27 @@ function EmailEditModal({
           </button>
         </div>
 
-        {/* Notifications */}
-        {error && (
-          <div className="flex items-center gap-2 rounded-md border border-red-200 bg-red-50 p-3 text-xs text-red-700 font-semibold">
-            <AlertTriangleIcon width={14} height={14} className="shrink-0 text-red-600" />
-            <div className="flex-1">{error}</div>
-          </div>
-        )}
-        {successMsg && (
-          <div className="flex items-center gap-2 rounded-md border border-green-200 bg-green-50 p-3 text-xs text-green-700 font-semibold">
-            <CheckCircleIcon width={14} height={14} className="shrink-0 text-green-600" />
-            <div className="flex-1">{successMsg}</div>
+        {/* Read-Only Approval Lock Banner */}
+        {isApproved && (
+          <div className="flex items-center justify-between gap-2 rounded-md border border-amber-200 bg-amber-50/90 p-3 text-xs text-amber-900 font-semibold shadow-2xs">
+            <div className="flex items-center gap-2">
+              <span className="text-base">🔒</span>
+              <div>
+                <span className="font-extrabold">Draft Approved & Content Locked:</span> Email content and contacts are read-only.
+                {isInCampaign
+                  ? ' This email is currently in an active campaign and cannot be returned to draft.'
+                  : ' Click "Return to Draft" to enable editing.'}
+              </div>
+            </div>
+            {!isInCampaign && (
+              <button
+                type="button"
+                onClick={() => setIsApproved(false)}
+                className="text-[11px] font-bold bg-amber-200/80 hover:bg-amber-300/90 text-amber-950 px-2.5 py-1 rounded border border-amber-300 shrink-0 transition-colors"
+              >
+                Return to Draft
+              </button>
+            )}
           </div>
         )}
 
@@ -672,170 +896,346 @@ function EmailEditModal({
             );
           })()}
 
-          {/* ── 1. DIRECT WEB CRAWLING IN MODAL ────────────────────────────── */}
-          <div className="bg-purple-50/50 border border-purple-200 rounded-lg p-3 space-y-2">
-            <label className="text-[10px] font-extrabold text-purple-900 uppercase tracking-wider flex items-center gap-1.5">
-              <GlobeIcon width={12} height={12} className="text-purple-600" />
-              Direct Website Crawling & Email Extraction
-            </label>
-            <div className="flex gap-2">
-              <input
-                type="text"
-                placeholder="Enter company website URL (e.g. https://acme.com)..."
-                value={websiteUrlInput}
-                onChange={(e) => setWebsiteUrlInput(e.target.value)}
-                disabled={crawling}
-                className="flex-1 text-xs border border-purple-200 rounded px-3 py-1.5 focus:ring-1 focus:ring-purple-500 focus:outline-none bg-white font-mono"
-              />
-              <Button
-                type="button"
-                size="sm"
-                onClick={() => { void handleCrawlWebsiteInModal(); }}
-                disabled={crawling || !websiteUrlInput.trim()}
-                className="bg-purple-600 hover:bg-purple-700 text-white text-xs px-3 py-1.5 font-bold shrink-0 flex items-center gap-1 disabled:opacity-50"
-              >
-                {crawling ? (
-                  <>
-                    <LoaderIcon width={11} height={11} className="animate-spin" />
-                    Crawling...
-                  </>
-                ) : (
-                  <>
-                    <RefreshIcon width={11} height={11} />
-                    ⚡ Crawl & Extract Emails
-                  </>
-                )}
-              </Button>
-            </div>
+          {/* ── 1. COMPACT WEBSITE CRAWLING ROW (Matching Clients Page) ────────────── */}
+          <div className="flex items-center justify-between bg-slate-50 border border-slate-200 rounded-md px-3 py-1.5 text-xs gap-2">
+            {crawling ? (
+              <div className="flex items-center gap-2 text-purple-700 font-semibold animate-pulse py-0.5">
+                <LoaderIcon width={13} height={13} className="animate-spin text-purple-600" />
+                Crawling website & extracting email addresses...
+              </div>
+            ) : websiteUrlInput && !isEditingWebUrl ? (
+              <div className="flex items-center justify-between w-full">
+                <div className="flex items-center gap-2 min-w-0 flex-1">
+                  <GlobeIcon width={13} height={13} className="text-slate-500 shrink-0" />
+                  <span className="text-[11px] font-bold text-slate-600 shrink-0">Website URL:</span>
+                  <a
+                    href={websiteUrlInput.startsWith('http') ? websiteUrlInput : `https://${websiteUrlInput}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex items-center gap-1 font-mono font-bold text-purple-700 hover:underline truncate"
+                  >
+                    {websiteUrlInput.replace(/^https?:\/\//, '').split('/')[0]}
+                    <ExternalLinkIcon width={10} height={10} className="shrink-0" />
+                  </a>
+                </div>
+
+                <div className="flex items-center gap-1.5 shrink-0 ml-2">
+                  <button
+                    type="button"
+                    disabled={isApproved || crawling}
+                    onClick={() => { void handleCrawlWebsiteInModal(); }}
+                    title="Recrawl Website & Extract Emails Again"
+                    className="flex items-center gap-1 text-[11px] font-bold text-purple-700 bg-purple-50 border border-purple-200 hover:bg-purple-100 px-2 py-0.5 rounded transition-colors disabled:opacity-40"
+                  >
+                    <RefreshIcon width={11} height={11} /> ⚡ Recrawl
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={isApproved || crawling}
+                    onClick={() => setIsEditingWebUrl(true)}
+                    title="Edit Website URL"
+                    className="text-slate-400 hover:text-purple-600 p-1 rounded hover:bg-purple-50 transition-colors disabled:opacity-30"
+                  >
+                    <EditIcon width={13} height={13} />
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="flex items-center justify-between w-full gap-2">
+                <div className="flex items-center gap-2 min-w-0 flex-1">
+                  <GlobeIcon width={13} height={13} className="text-slate-500 shrink-0" />
+                  <span className="text-[11px] font-bold text-slate-600 shrink-0">Website URL:</span>
+                  <input
+                    type="url"
+                    placeholder="Enter website URL (e.g. https://acme.com)..."
+                    value={websiteUrlInput}
+                    onChange={(e) => setWebsiteUrlInput(e.target.value)}
+                    disabled={isApproved || crawling}
+                    className="flex-1 text-xs font-mono border border-slate-200 rounded px-2.5 py-1 focus:ring-1 focus:ring-purple-500 focus:outline-none bg-white text-slate-800 disabled:opacity-50"
+                  />
+                </div>
+
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={() => { void handleCrawlWebsiteInModal(); }}
+                    disabled={isApproved || crawling || !websiteUrlInput.trim()}
+                    className="bg-purple-600 hover:bg-purple-700 text-white text-[11px] px-2.5 py-1 font-bold flex items-center gap-1 disabled:opacity-50"
+                  >
+                    {crawling ? <LoaderIcon width={10} height={10} className="animate-spin" /> : <RefreshIcon width={10} height={10} />}
+                    Save & Crawl
+                  </Button>
+
+                  {websiteUrlInput && (
+                    <button
+                      type="button"
+                      disabled={crawling}
+                      onClick={() => setIsEditingWebUrl(false)}
+                      className="text-[10px] text-slate-400 hover:text-slate-600 px-1 disabled:opacity-30"
+                    >
+                      Cancel
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
 
-          {/* ── 2. CONTACT EMAILS & INLINE SMTP VERIFICATION ───────────────── */}
+          {/* ── 2. CONTACT EMAILS & INLINE SMTP VERIFICATION (Matching Clients Page) ── */}
           <div className="border border-slate-200 rounded-lg p-3.5 space-y-3 bg-slate-50/50">
             <div className="flex items-center justify-between">
-              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
-                Target Contact Emails ({availableEmails.length} Discovered)
+              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
+                <MailIcon width={12} height={12} className="text-slate-600" />
+                Contact Emails ({availableEmails.length} Discovered)
               </label>
-              {targetEmailInput ? (
-                <div className="flex items-center gap-1.5">
-                  <span className="text-[10px] font-semibold text-slate-500">Selected Target:</span>
-                  <span className="font-mono font-bold text-indigo-700 bg-white px-2 py-0.5 rounded border border-indigo-200">
-                    {targetEmailInput}
-                  </span>
-                  <SmtpBadge status={targetStatus ?? 'pending'} />
-                </div>
+
+              {!isAddingEmail ? (
+                <button
+                  type="button"
+                  disabled={isApproved}
+                  onClick={() => {
+                    setIsAddingEmail(true);
+                    setAddingEmailValue('');
+                  }}
+                  className="text-[10px] font-bold text-blue-700 bg-blue-50 border border-blue-200 px-2.5 py-0.5 rounded hover:bg-blue-100 flex items-center gap-1 transition-colors disabled:opacity-40"
+                >
+                  <PlusCircleIcon width={11} height={11} /> + Add Email
+                </button>
               ) : (
-                <Badge tone="warning">⚠️ No Email Selected</Badge>
+                <div className="text-[10px] font-semibold text-slate-500 italic">
+                  Multiple sender addresses pool used during campaign dispatch
+                </div>
               )}
             </div>
 
-            {/* Email Radio List with Inline SMTP Verify Buttons */}
+            {/* Email List with Inline Edit, Delete, & SMTP Verification */}
             {availableEmails.length > 0 ? (
-              <div className="space-y-1.5 bg-white border border-slate-200 rounded-md p-2 max-h-36 overflow-y-auto">
+              <div className="space-y-2 bg-white border border-slate-200 rounded-md p-2 max-h-56 overflow-y-auto">
                 {availableEmails.map((em) => {
                   const status = verifiedMap.get(em.toLowerCase()) ?? 'pending';
-                  const isSelected = targetEmailInput.toLowerCase() === em.toLowerCase();
                   const isVerifying = verifyingEmail === em;
+                  const isEditingThis = editingEmailKey === em;
 
                   return (
                     <div
                       key={em}
-                      onClick={() => setTargetEmailInput(em)}
-                      className={[
-                        'flex items-center justify-between p-2 rounded-md border text-xs cursor-pointer transition-all',
-                        isSelected ? 'bg-indigo-50/80 border-indigo-300 font-bold' : 'border-slate-100 hover:bg-slate-50',
-                      ].join(' ')}
+                      className="flex flex-col bg-slate-50/50 border border-slate-200/80 rounded-md p-2 text-xs transition-all gap-1.5"
                     >
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="radio"
-                          name="targetEmailSelection"
-                          checked={isSelected}
-                          onChange={() => setTargetEmailInput(em)}
-                          className="text-indigo-600 focus:ring-indigo-500 cursor-pointer"
-                        />
-                        <span className="font-mono text-slate-900">{em}</span>
-                      </div>
-
-                      <div className="flex items-center gap-2">
-                        <SmtpBadge status={status} />
-                        <button
-                          type="button"
-                          disabled={isVerifying}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            void handleVerifyEmailInModal(em);
-                          }}
-                          className="flex items-center gap-1 text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded hover:bg-amber-100 transition-colors disabled:opacity-50"
-                        >
-                          {isVerifying ? (
-                            <>
-                              <LoaderIcon width={10} height={10} className="animate-spin text-amber-600" />
-                              Verifying...
-                            </>
-                          ) : (
-                            <>⚡ Verify SMTP</>
+                      {isEditingThis ? (
+                        <div className="flex flex-col gap-1.5 w-full">
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="email"
+                              autoFocus
+                              value={editingEmailValue}
+                              onChange={(e) => setEditingEmailValue(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter' && isValidEmail(editingEmailValue)) {
+                                  void handleSaveEditEmail(em);
+                                }
+                              }}
+                              disabled={saving}
+                              className={[
+                                'flex-1 text-xs font-mono border rounded px-2.5 py-1 focus:ring-1 focus:outline-none bg-white disabled:opacity-50 transition-colors',
+                                editingEmailValue.length > 0 && !isValidEmail(editingEmailValue)
+                                  ? 'border-red-400 focus:ring-red-500 bg-red-50/40 text-red-900 font-semibold'
+                                  : 'border-blue-300 focus:ring-blue-500 text-slate-900',
+                              ].join(' ')}
+                            />
+                            <button
+                              type="button"
+                              disabled={saving || !isValidEmail(editingEmailValue)}
+                              onClick={() => { void handleSaveEditEmail(em); }}
+                              className="text-[11px] font-bold text-green-700 bg-green-50 border border-green-200 px-2.5 py-1 rounded hover:bg-green-100 flex items-center gap-1 disabled:opacity-40 transition-colors shrink-0"
+                            >
+                              {saving ? <LoaderIcon width={10} height={10} className="animate-spin" /> : '✓'} Save & Verify
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => { setEditingEmailKey(null); setEditingEmailValue(''); }}
+                              className="text-[10px] font-semibold text-slate-400 hover:text-slate-600 px-1 shrink-0"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                          {/* Zod-Style Error Helper for Edit */}
+                          {editingEmailValue.length > 0 && !isValidEmail(editingEmailValue) && (
+                            <p className="text-[11px] font-medium text-red-600 flex items-center gap-1 animate-in fade-in">
+                              <AlertTriangleIcon width={12} height={12} className="shrink-0 text-red-500" />
+                              Invalid email address (e.g. name@domain.com)
+                            </p>
                           )}
-                        </button>
-                      </div>
+                        </div>
+                      ) : (
+                        <div className="flex items-center justify-between gap-2 w-full">
+                          <span className="font-mono font-semibold text-slate-900 truncate flex-1">{em}</span>
+
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <SmtpBadge status={status} />
+
+                            <button
+                              type="button"
+                              disabled={isApproved || isVerifying}
+                              onClick={() => { void handleVerifyEmailInModal(em); }}
+                              className="flex items-center gap-1 text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded hover:bg-amber-100 transition-colors disabled:opacity-50"
+                            >
+                              {isVerifying ? (
+                                <>
+                                  <LoaderIcon width={10} height={10} className="animate-spin text-amber-600" />
+                                  Verifying...
+                                </>
+                              ) : (
+                                <>⚡ Verify SMTP</>
+                              )}
+                            </button>
+
+                            <button
+                              type="button"
+                              disabled={isApproved || saving}
+                              onClick={() => {
+                                setEditingEmailKey(em);
+                                setEditingEmailValue(em);
+                              }}
+                              title="Edit Email Address"
+                              className="text-slate-400 hover:text-indigo-600 p-1 rounded hover:bg-indigo-50 transition-colors disabled:opacity-30"
+                            >
+                              <EditIcon width={13} height={13} />
+                            </button>
+
+                            <button
+                              type="button"
+                              disabled={isApproved || saving}
+                              onClick={() => { void handleDeleteEmailInModal(em); }}
+                              title="Remove email"
+                              className="text-slate-400 hover:text-red-600 p-1 rounded hover:bg-red-50 transition-colors disabled:opacity-30"
+                            >
+                              <XIcon width={13} height={13} />
+                            </button>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   );
                 })}
               </div>
             ) : (
               <div className="bg-amber-50 border border-amber-200 rounded-md p-2.5 text-xs text-amber-800 font-semibold italic flex items-center justify-between">
-                <span>No contact emails discovered yet for this entry.</span>
+                <span>No contact emails added yet. Click "+ Add Email" above to add contact address.</span>
                 <Badge tone="warning">⚠️ No Email Found</Badge>
               </div>
             )}
 
-            {/* Add Multiple Emails Input Field */}
-            <div className="pt-2 border-t border-slate-200/80 space-y-1.5">
-              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">
-                Add Multiple Emails directly (Comma / Space Separated)
+            {/* Collapsible Add Email Row matching Client Detail Page */}
+            {isAddingEmail && (
+              <div className="pt-2 border-t border-slate-200/80 space-y-1.5 bg-blue-50/40 border border-blue-100 rounded-md p-2.5">
+                <label className="text-[10px] font-bold text-blue-900 uppercase tracking-wider block">
+                  Add New Email & Verify SMTP
+                </label>
+                <div className="flex flex-col gap-1.5">
+                  <div className="flex gap-2">
+                    <input
+                      type="email"
+                      autoFocus
+                      placeholder="Enter contact email (e.g. name@domain.com)..."
+                      value={addingEmailValue}
+                      onChange={(e) => setAddingEmailValue(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && isValidEmail(addingEmailValue)) {
+                          void handleSaveAddEmail();
+                        }
+                      }}
+                      disabled={isApproved || saving}
+                      className={[
+                        'flex-1 text-xs font-mono border rounded px-3 py-1.5 focus:ring-1 focus:outline-none bg-white disabled:opacity-50 transition-colors',
+                        addingEmailValue.length > 0 && !isValidEmail(addingEmailValue)
+                          ? 'border-red-400 focus:ring-red-500 bg-red-50/30 text-red-900 font-semibold'
+                          : 'border-slate-300 focus:ring-indigo-500 text-slate-900',
+                      ].join(' ')}
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => { void handleSaveAddEmail(); }}
+                      disabled={isApproved || saving || !isValidEmail(addingEmailValue)}
+                      className="border-indigo-200 text-indigo-700 hover:bg-indigo-50 text-xs px-3 py-1.5 font-bold flex items-center gap-1 shrink-0 disabled:opacity-40 transition-all"
+                    >
+                      {saving ? <LoaderIcon width={11} height={11} className="animate-spin" /> : <PlusCircleIcon width={12} height={12} />}
+                      + Add & Verify SMTP
+                    </Button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsAddingEmail(false);
+                        setAddingEmailValue('');
+                      }}
+                      className="text-[10px] font-semibold text-slate-400 hover:text-slate-600 px-1 shrink-0"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                  {/* Zod-Style Error Helper for Add */}
+                  {addingEmailValue.length > 0 && !isValidEmail(addingEmailValue) && (
+                    <p className="text-[11px] font-medium text-red-600 flex items-center gap-1 animate-in fade-in">
+                      <AlertTriangleIcon width={12} height={12} className="shrink-0 text-red-500" />
+                      Invalid email address (e.g. name@domain.com)
+                    </p>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* ── 3. EMAIL HTML BODY & SUBJECT ───── */}
+          <div className="space-y-3 border border-slate-200 rounded-lg p-3.5 bg-white">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+              <label className="text-[10px] font-extrabold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
+                <SparklesIcon width={12} height={12} className="text-indigo-600" />
+                Email Outreach Draft
               </label>
-              <div className="flex gap-2">
+            </div>
+
+            {/* Subject Line Input / Display */}
+            <div className="space-y-1">
+              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
+                Subject Line
+              </label>
+              {!isApproved ? (
                 <input
                   type="text"
-                  placeholder="e.g. contact@company.com, sales@company.com"
-                  value={multipleEmailsInput}
-                  onChange={(e) => setMultipleEmailsInput(e.target.value)}
+                  value={subjectInput}
+                  onChange={(e) => setSubjectInput(e.target.value)}
                   disabled={saving}
-                  className="flex-1 text-xs font-mono border border-slate-300 rounded px-3 py-1.5 focus:ring-1 focus:ring-indigo-500 focus:outline-none bg-white"
+                  placeholder="Enter email subject line..."
+                  className="w-full text-xs font-bold text-slate-900 border border-slate-300 rounded px-3 py-2 focus:ring-1 focus:ring-indigo-500 focus:outline-none bg-white"
                 />
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => { void handleAddMultipleEmails(); }}
-                  disabled={saving || !multipleEmailsInput.trim()}
-                  className="border-indigo-200 text-indigo-700 hover:bg-indigo-50 text-xs px-3 py-1.5 font-bold flex items-center gap-1 shrink-0"
-                >
-                  <PlusCircleIcon width={12} height={12} />
-                  + Add & Verify SMTP
-                </Button>
-              </div>
+              ) : (
+                <div className="text-xs font-bold text-slate-900 bg-slate-50 border border-slate-200/80 rounded px-3 py-2">
+                  {subjectInput || <span className="text-slate-400 italic">No subject line provided</span>}
+                </div>
+              )}
             </div>
-          </div>
 
-          {/* Subject Line */}
-          <div className="space-y-1">
-            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
-              Subject Line
-            </label>
-            <input
-              type="text"
-              value={subjectInput}
-              onChange={(e) => setSubjectInput(e.target.value)}
-              className="w-full text-xs font-bold text-slate-900 border border-slate-300 rounded px-3 py-2 focus:ring-1 focus:ring-indigo-500 focus:outline-none"
-            />
-          </div>
+            {/* Email HTML Body (WYSIWYG Editor when draft is editable) */}
+            <div className="space-y-1">
+              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
+                Email HTML Body (WYSIWYG Editor)
+              </label>
 
-          {/* WYSIWYG Editor */}
-          <div className="space-y-1">
-            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
-              Email HTML Body (WYSIWYG Editor)
-            </label>
-            <RichTextEditor initialValue={bodyHtmlInput} onChange={setBodyHtmlInput} />
+              {!isApproved ? (
+                <RichTextEditor initialValue={bodyHtmlInput} onChange={setBodyHtmlInput} readOnly={false} />
+              ) : (
+                <div className="bg-slate-50/70 border border-slate-200 rounded-md p-4 min-h-[160px] text-xs text-slate-800 leading-relaxed overflow-x-auto select-text">
+                  {bodyHtmlInput ? (
+                    <div dangerouslySetInnerHTML={{ __html: bodyHtmlInput }} />
+                  ) : (
+                    <span className="text-slate-400 italic font-medium">No email body generated yet. Crawl website above to generate email draft.</span>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
 
           {/* AI Refinement */}
@@ -846,18 +1246,19 @@ function EmailEditModal({
             <div className="flex gap-2">
               <input
                 type="text"
-                placeholder="e.g. Make email tone more casual"
+                placeholder={isApproved ? 'Unlock draft to refine with AI...' : 'e.g. Make email tone more casual'}
                 value={refinePrompt}
                 onChange={(e) => setRefinePrompt(e.target.value)}
-                className="flex-1 text-xs border border-slate-200 rounded px-3 py-1.5 focus:ring-1 focus:ring-indigo-500 focus:outline-none bg-white"
+                disabled={isApproved || refining}
+                className="flex-1 text-xs border border-slate-200 rounded px-3 py-1.5 focus:ring-1 focus:ring-indigo-500 focus:outline-none bg-white disabled:opacity-50 disabled:cursor-not-allowed"
               />
               <Button
                 type="button"
                 variant="outline"
                 size="sm"
                 onClick={() => { void handleImproveWithAi(); }}
-                disabled={refining || !refinePrompt.trim()}
-                className="text-indigo-600 border-indigo-200 hover:bg-indigo-100 flex items-center gap-1 text-xs shrink-0"
+                disabled={isApproved || refining || !refinePrompt.trim()}
+                className="text-indigo-600 border-indigo-200 hover:bg-indigo-100 flex items-center gap-1 text-xs shrink-0 disabled:opacity-50"
               >
                 {refining ? <LoaderIcon width={11} height={11} className="animate-spin" /> : <SparklesIcon width={11} height={11} />}
                 Improve with AI
@@ -871,15 +1272,19 @@ function EmailEditModal({
           <div className="flex items-center gap-3">
             <button
               type="button"
+              disabled={isInCampaign}
               onClick={handleToggleModalApprove}
               className={[
-                'text-xs px-3 py-1.5 rounded-full font-bold border transition-all',
-                isApproved
-                  ? 'bg-green-600 text-white border-green-600'
+                'text-xs px-3 py-1.5 rounded-full font-bold border transition-all flex items-center gap-1',
+                isInCampaign
+                  ? 'bg-emerald-800 text-white border-emerald-900 cursor-not-allowed opacity-90'
+                  : isApproved
+                  ? 'bg-green-600 text-white border-green-600 hover:bg-green-700'
                   : 'bg-slate-100 text-slate-600 border-slate-200 hover:bg-slate-200',
               ].join(' ')}
+              title={isInCampaign ? 'In active campaign sending flow — status cannot return to draft' : undefined}
             >
-              {isApproved ? '✓ Approved' : 'Mark as Approved'}
+              {isInCampaign ? '🔒 In Campaign (Approved)' : isApproved ? '✓ Approved (Click to Draft)' : 'Mark as Approved'}
             </button>
 
             <button
@@ -936,26 +1341,48 @@ function CompactEmailCard({
     e.stopPropagation();
     setCardError(null);
 
-    if (!emailItem.approved) {
-      if (!emailItem.targetEmail || emailItem.emailStatus !== 'valid') {
-        setCardError('Cannot approve draft! Target contact email must be entered and SMTP verified as valid before approval.');
-        setTimeout(() => setCardError(null), 4000);
+    const verifiedMap = new Map<string, VerifiedEmailItem['status']>();
+    (leadDoc.verifiedEmails ?? []).forEach((v) => verifiedMap.set(v.email.toLowerCase(), v.status));
+
+    const compObj = emailItem.companyIndex >= 0 ? leadDoc.currentCompanies?.[emailItem.companyIndex] : null;
+    const availableEmails: string[] = Array.from(new Set(
+      emailItem.companyIndex === -1
+        ? (leadDoc.discoveredEmails ?? (leadDoc.email ? [leadDoc.email] : []))
+        : (compObj?.companyEmails ?? [])
+    ));
+
+    const nextApproved = !emailItem.approved;
+
+    if (nextApproved) {
+      const eligibility = checkApprovalEligibility(availableEmails, verifiedMap);
+      if (!eligibility.ok) {
+        setCardError(eligibility.error!);
+        setTimeout(() => setCardError(null), 5000);
         return;
       }
     }
 
     try {
       const companies = [...(leadDoc.currentCompanies ?? [])];
-      if (companies[emailItem.companyIndex]) {
-        companies[emailItem.companyIndex].approved = !emailItem.approved;
+      if (emailItem.companyIndex !== -1 && companies[emailItem.companyIndex]) {
+        companies[emailItem.companyIndex].approved = nextApproved;
       }
 
       const res = await updateLeadDetailsApi(emailItem.leadId, {
-        currentCompanies: companies,
-        approved: companies[0]?.approved ?? !emailItem.approved,
+        ...(emailItem.companyIndex !== -1
+          ? {
+              currentCompanies: companies,
+              approved: companies[0]?.approved ?? nextApproved,
+            }
+          : {
+              approved: nextApproved,
+            }),
       });
       onLeadUpdated(res.result);
-    } catch { /* ignore */ }
+    } catch (err) {
+      setCardError(err instanceof Error ? err.message : 'Failed to update approval status');
+      setTimeout(() => setCardError(null), 4000);
+    }
   };
 
   return (
