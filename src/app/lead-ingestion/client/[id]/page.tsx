@@ -1491,7 +1491,7 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
                   aiPromptValue={boxAiPrompts[-1] || ''}
                   onSave={(subj, body) => handleSaveInlineDraft(-1, subj, body)}
                   onRegenerate={() => handleRegenerateCompanyDraft(-1)}
-                  onToggleApprove={() => handleToggleApproveDraft(-99)}
+                  onToggleApprove={() => handleToggleApproveDraft(-1)}
                   onAiPromptChange={(val) => setBoxAiPrompts((prev) => ({ ...prev, [-1]: val }))}
                   onAiRefine={() => handleAiRefineDraft(-1)}
                 />
