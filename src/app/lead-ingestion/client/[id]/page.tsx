@@ -274,6 +274,7 @@ function InlineRichDraftEditor({
   isSaving,
   isRegenerating,
   isRewriting,
+  isApproving = false,
   isApproved,
   aiPromptValue,
   title,
@@ -291,6 +292,7 @@ function InlineRichDraftEditor({
   isSaving: boolean;
   isRegenerating: boolean;
   isRewriting: boolean;
+  isApproving?: boolean;
   isApproved: boolean;
   aiPromptValue: string;
   title: string;
@@ -377,14 +379,21 @@ function InlineRichDraftEditor({
 
           <Button
             size="sm"
+            disabled={isApproving}
             variant={isApproved ? 'primary' : 'outline'}
             onClick={() => void onToggleApprove()}
             className={[
-              'text-[10px] px-2.5 py-0.5 font-bold transition-all',
+              'text-[10px] px-2.5 py-0.5 font-bold transition-all flex items-center gap-1 disabled:opacity-50',
               isApproved ? 'bg-green-600 hover:bg-green-700 text-white border-green-600' : 'border-slate-300 text-slate-600 hover:bg-slate-50',
             ].join(' ')}
           >
-            {isApproved ? '✓ Approved' : 'Approve'}
+            {isApproving ? (
+              <><LoaderIcon width={10} height={10} className="animate-spin" /> Updating...</>
+            ) : isApproved ? (
+              '✓ Approved'
+            ) : (
+              'Approve'
+            )}
           </Button>
         </div>
       </div>
@@ -915,8 +924,11 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
     }
   };
 
+  const [approvingIndex, setApprovingIndex] = useState<number | null>(null);
+
   const handleToggleApproveDraft = async (boxIndex: number) => {
     if (!id) return;
+    setApprovingIndex(boxIndex);
     try {
       if (boxIndex < 0) {
         // Personal Profile Outreach Draft
@@ -962,6 +974,8 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
       }
     } catch (e) {
       showToast(e instanceof Error ? e.message : 'Failed to update approval', 'error');
+    } finally {
+      setApprovingIndex(null);
     }
   };
 
@@ -1487,6 +1501,7 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
                   isSaving={savingDraftIndex === -1}
                   isRegenerating={regeneratingCompIndex === -1}
                   isRewriting={rewritingAiIndex === -1}
+                  isApproving={approvingIndex === -1}
                   isApproved={Boolean(lead?.approved)}
                   aiPromptValue={boxAiPrompts[-1] || ''}
                   onSave={(subj, body) => handleSaveInlineDraft(-1, subj, body)}
@@ -1830,6 +1845,7 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
                         isSaving={savingDraftIndex === i}
                         isRegenerating={regeneratingCompIndex === i}
                         isRewriting={rewritingAiIndex === i}
+                        isApproving={approvingIndex === i}
                         isApproved={isApproved}
                         aiPromptValue={boxAiPrompts[i] || ''}
                         onSave={(subj, body) => handleSaveInlineDraft(i, subj, body)}
