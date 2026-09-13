@@ -65,8 +65,8 @@ export default function ApprovedEmailsPage() {
   // Modal State
   const [showModal, setShowModal] = useState(false);
   const [campaignName, setCampaignName] = useState('');
-  const [minDelay, setMinDelay] = useState(15);
-  const [maxDelay, setMaxDelay] = useState(90);
+  const [minDelay, setMinDelay] = useState(60);
+  const [maxDelay, setMaxDelay] = useState(600);
   const [creating, setCreating] = useState(false);
 
   const fetchApprovedUnsentLeads = useCallback(async () => {

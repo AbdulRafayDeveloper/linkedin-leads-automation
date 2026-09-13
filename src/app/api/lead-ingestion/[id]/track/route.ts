@@ -12,9 +12,13 @@ const TRANSPARENT_GIF_BUFFER = Buffer.from(
   'base64'
 );
 
-export async function GET(_request: NextRequest, { params }: RouteParams) {
+export async function GET(request: NextRequest, { params }: RouteParams) {
   try {
     const { id } = await params;
+    const { searchParams } = new URL(request.url);
+    const campaignId = searchParams.get('campaignId');
+    const itemId = searchParams.get('itemId');
+
     if (mongoose.Types.ObjectId.isValid(id)) {
       await connectToMongoDB();
       const doc = await LeadIngestion.findById(id);
@@ -32,7 +36,26 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
           reasons.push(openLog);
           doc.emailValidationDetails = JSON.stringify({ reasons });
           doc.emailValidationStatus = 'valid';
+          doc.emailStatus = 'opened';
           await doc.save();
+        }
+      }
+
+      // Update Campaign Item status if campaignId and itemId provided
+      if (campaignId && itemId && mongoose.Types.ObjectId.isValid(campaignId)) {
+        const { Campaign } = await import('@/lib/db/models/Campaign');
+        const campaign = await Campaign.findById(campaignId);
+        if (campaign) {
+          const targetItem = campaign.items.find(
+            (i) => i._id && i._id.toString() === itemId
+          );
+          if (targetItem) {
+            targetItem.status = 'opened';
+            if (!targetItem.openedAt) targetItem.openedAt = new Date();
+            campaign.deliveredCount = campaign.items.filter((i) => i.status === 'delivered' || i.status === 'opened').length;
+            campaign.openedCount = campaign.items.filter((i) => i.status === 'opened').length;
+            await campaign.save();
+          }
         }
       }
     }

@@ -11,13 +11,14 @@ interface RouteParams {
 export async function POST(request: NextRequest, { params }: RouteParams) {
   try {
     const { id } = await params;
-    const body = (await request.json()) as { refinementPrompt?: string };
+    const body = (await request.json()) as { refinementPrompt?: string; prompt?: string; companyIndex?: number };
+    const promptText = (body.refinementPrompt || body.prompt || '').trim();
 
-    if (!body.refinementPrompt || !body.refinementPrompt.trim()) {
+    if (!promptText) {
       return jsonError('refinementPrompt is required', 400);
     }
 
-    const result = await refineEmailWithAi(id, body.refinementPrompt);
+    const result = await refineEmailWithAi(id, promptText, { companyIndex: body.companyIndex });
     return jsonOk({ result });
   } catch (error) {
     return jsonError(

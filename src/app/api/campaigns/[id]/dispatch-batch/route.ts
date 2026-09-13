@@ -60,8 +60,8 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       });
     }
 
-    // Process target batch items
-    const batchToProcess = targetItems.slice(0, 5); // Max 5 emails per Vercel request batch
+    // Process single email per step sequentially (no parallel sending)
+    const batchToProcess = targetItems.slice(0, 1);
     let batchSuccess = 0;
     let batchFailure = 0;
 
@@ -71,13 +71,18 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
 
       try {
         const leadIdStr = item.leadId ? item.leadId.toString() : '';
-        const trackingPixel = `<img src="${appUrl}/api/lead-ingestion/${leadIdStr}/track" width="1" height="1" style="display:none;" alt="" />`;
-        const htmlBodyWithPixel = `${item.bodyHtml || ''}\n\n${trackingPixel}`;
+        const itemIdStr = item._id ? item._id.toString() : '';
+        const campaignIdStr = campaign._id.toString();
+        const enableTracking = process.env.ENABLE_OPEN_TRACKING === 'true';
+        const trackingPixel = enableTracking
+          ? `<img src="${appUrl}/api/lead-ingestion/${leadIdStr}/track?campaignId=${campaignIdStr}&itemId=${itemIdStr}" width="1" height="1" style="display:none;" alt="" />`
+          : '';
+        const htmlBodyToSend = enableTracking ? `${item.bodyHtml || ''}\n\n${trackingPixel}` : (item.bodyHtml || '');
 
         const sendResult = await sendOutboundEmail({
           to: item.recipientEmail,
           subject: item.subject || 'Cold Outreach',
-          htmlBody: htmlBodyWithPixel,
+          htmlBody: htmlBodyToSend,
         });
 
         if (sendResult.success) {
@@ -96,12 +101,22 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
         batchFailure++;
       }
 
-      // Update lead document status
+      // Update lead document box status
       if (item.leadId) {
-        await LeadIngestion.updateOne(
-          { _id: item.leadId },
-          { $set: { emailStatus: item.status === 'delivered' ? 'delivered' : 'failed' } }
-        ).catch(() => undefined);
+        const leadDoc = await LeadIngestion.findById(item.leadId);
+        if (leadDoc) {
+          const itemIdx = item.companyIndex ?? 0;
+          if (itemIdx === -1) {
+            leadDoc.inCampaign = true;
+            leadDoc.campaignSendStatus = item.status;
+            leadDoc.emailStatus = item.status === 'delivered' ? 'delivered' : 'failed';
+          } else if (itemIdx >= 0 && leadDoc.currentCompanies[itemIdx]) {
+            leadDoc.currentCompanies[itemIdx].inCampaign = true;
+            leadDoc.currentCompanies[itemIdx].campaignSendStatus = item.status;
+            leadDoc.markModified('currentCompanies');
+          }
+          await leadDoc.save().catch(() => undefined);
+        }
       }
 
       await campaign.save();

@@ -156,7 +156,8 @@ export async function generateLeadEmail(
 
       const compName = comp.companyName || 'Company';
       const compJob = comp.jobTitle || 'Professional';
-      const compSummary = `${doc.summary || ''} | Company: ${compName} (${compJob})`;
+      const roleDetails = comp.summary || (comp as unknown as { roleSummary?: string }).roleSummary || '';
+      const compSummary = `${doc.summary || ''}${roleDetails ? ` | Role details: ${roleDetails}` : ''} | Target Company: ${compName} (${compJob})`;
       const prompt = buildOutreachPrompt(firstName, compSummary, comp.websiteUrl, activeSender, userPrompt, globalPromptText);
 
       for (const model of candidateModels) {
@@ -244,8 +245,9 @@ export async function generateLeadEmail(
 export async function refineEmailWithAi(
   leadId: string,
   refinementPrompt: string,
-  models?: EmailGeneratorModel[],
-  sender: SenderProfile = senderProfile
+  modelsOrOptions?: EmailGeneratorModel[] | { companyIndex?: number; models?: EmailGeneratorModel[]; sender?: SenderProfile },
+  senderParam: SenderProfile = senderProfile,
+  companyIndexParam?: number
 ): Promise<LeadIngestionDocument> {
   await connectToMongoDB();
 
@@ -258,8 +260,27 @@ export async function refineEmailWithAi(
     throw new Error('Lead ingestion record not found');
   }
 
-  const currentSubject = doc.emailSubject || '(no subject)';
-  const currentBody = doc.emailBody || '(no body)';
+  let companyIndex: number | undefined = companyIndexParam;
+  let models: EmailGeneratorModel[] | undefined;
+  let sender: SenderProfile = senderParam;
+
+  if (modelsOrOptions && !Array.isArray(modelsOrOptions) && typeof modelsOrOptions === 'object') {
+    companyIndex = modelsOrOptions.companyIndex ?? companyIndexParam;
+    models = modelsOrOptions.models;
+    if (modelsOrOptions.sender) sender = modelsOrOptions.sender;
+  } else if (Array.isArray(modelsOrOptions)) {
+    models = modelsOrOptions;
+  }
+
+  const isTargetingCompany = typeof companyIndex === 'number' && companyIndex >= 0;
+  const targetComp = isTargetingCompany && typeof companyIndex === 'number' ? doc.currentCompanies?.[companyIndex] : null;
+
+  const currentSubject = isTargetingCompany
+    ? (targetComp?.emailSubject || '(no subject)')
+    : (doc.emailSubject || '(no subject)');
+  const currentBody = isTargetingCompany
+    ? (targetComp?.emailBody || '(no body)')
+    : (doc.emailBody || '(no body)');
 
   const prompt = `You are ${sender.name}, a ${sender.title}. Context about you: ${sender.positioning.join('; ')}.
 
@@ -299,8 +320,14 @@ Respond ONLY with strict JSON in this exact shape:
         throw new Error('Incomplete subject or body');
       }
 
-      doc.emailSubject = stripDashes(parsed.subject);
-      doc.emailBody = parsed.body;
+      if (isTargetingCompany && targetComp) {
+        targetComp.emailSubject = stripDashes(parsed.subject);
+        targetComp.emailBody = parsed.body;
+        doc.markModified('currentCompanies');
+      } else {
+        doc.emailSubject = stripDashes(parsed.subject);
+        doc.emailBody = parsed.body;
+      }
       return await doc.save();
     } catch (error) {
       errors.push(error instanceof Error ? error.message : 'unknown error');

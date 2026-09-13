@@ -70,8 +70,8 @@ const CampaignSchema = new Schema<CampaignDocument>(
     deliveredCount: { type: Number, default: 0 },
     failedCount: { type: Number, default: 0 },
     openedCount: { type: Number, default: 0 },
-    minDelaySeconds: { type: Number, default: 15 },
-    maxDelaySeconds: { type: Number, default: 90 },
+    minDelaySeconds: { type: Number, default: 60 },
+    maxDelaySeconds: { type: Number, default: 600 },
     items: { type: [CampaignItemSchema], default: [] },
   },
   { timestamps: true }

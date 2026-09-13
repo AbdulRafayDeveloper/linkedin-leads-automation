@@ -20,6 +20,8 @@ export interface CurrentCompanyItem {
   emailSubject?: string | null;
   emailBody?: string | null;
   approved?: boolean;
+  inCampaign?: boolean;
+  campaignSendStatus?: 'pending' | 'sending' | 'delivered' | 'opened' | 'failed' | 'in_progress';
 }
 
 export interface LeadIngestionDocument extends Document {
@@ -47,6 +49,8 @@ export interface LeadIngestionDocument extends Document {
   emailSubject: string | null;
   emailBody: string | null;
   approved: boolean;
+  inCampaign?: boolean;
+  campaignSendStatus?: 'pending' | 'sending' | 'delivered' | 'opened' | 'failed' | 'in_progress';
   emailStatus: 'pending' | 'in_progress' | 'delivered' | 'opened' | 'failed' | 'no_contact_email';
   createdAt: Date;
   updatedAt: Date;
@@ -88,6 +92,8 @@ const LeadIngestionSchema = new Schema<LeadIngestionDocument>(
           emailSubject: { type: String, default: null },
           emailBody: { type: String, default: null },
           approved: { type: Boolean, default: false },
+          inCampaign: { type: Boolean, default: false },
+          campaignSendStatus: { type: String, default: null },
         },
       ],
       default: [],
@@ -127,6 +133,8 @@ const LeadIngestionSchema = new Schema<LeadIngestionDocument>(
     emailSubject: { type: String, default: null },
     emailBody: { type: String, default: null },
     approved: { type: Boolean, default: false },
+    inCampaign: { type: Boolean, default: false },
+    campaignSendStatus: { type: String, default: null },
     emailStatus: {
       type: String,
       enum: ['pending', 'in_progress', 'delivered', 'opened', 'failed', 'no_contact_email'],

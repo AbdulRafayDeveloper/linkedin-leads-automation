@@ -111,12 +111,25 @@ export async function POST(request: NextRequest) {
 
     const saved = await campaign.save();
 
-    // Update corresponding lead documents to mark email status in_progress
-    const leadIds = Array.from(new Set(body.items.map((i) => i.leadId)));
-    await LeadIngestion.updateMany(
-      { _id: { $in: leadIds.map((id) => new mongoose.Types.ObjectId(id)) } },
-      { $set: { emailStatus: 'in_progress' } }
-    );
+    // Update corresponding lead document boxes to mark inCampaign = true and campaignSendStatus = 'pending'
+    for (const item of body.items) {
+      if (!item.leadId) continue;
+      const leadObjId = new mongoose.Types.ObjectId(item.leadId);
+      const leadDoc = await LeadIngestion.findById(leadObjId);
+      if (leadDoc) {
+        const itemIdx = item.companyIndex ?? 0;
+        if (itemIdx === -1) {
+          leadDoc.inCampaign = true;
+          leadDoc.campaignSendStatus = 'pending';
+          leadDoc.emailStatus = 'in_progress';
+        } else if (itemIdx >= 0 && leadDoc.currentCompanies[itemIdx]) {
+          leadDoc.currentCompanies[itemIdx].inCampaign = true;
+          leadDoc.currentCompanies[itemIdx].campaignSendStatus = 'pending';
+          leadDoc.markModified('currentCompanies');
+        }
+        await leadDoc.save();
+      }
+    }
 
     return jsonOk({ campaign: { ...saved.toObject(), _id: saved._id.toString() } });
   } catch (error) {

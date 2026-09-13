@@ -221,6 +221,54 @@ function SmtpBadge({ status }: { status: VerifiedEmailItem['status'] }) {
   return <Badge tone="warning">⚡ SMTP Not Verified</Badge>;
 }
 
+function BoxStatusBadge({
+  approved,
+  inCampaign,
+  campaignSendStatus,
+}: {
+  approved?: boolean;
+  inCampaign?: boolean;
+  campaignSendStatus?: string | null;
+}) {
+  return (
+    <div className="inline-flex items-center gap-1.5 flex-wrap ml-2">
+      {/* Approval Tag */}
+      {approved ? (
+        <span className="text-[10px] font-extrabold bg-green-100 text-green-800 border border-green-300 px-2 py-0.5 rounded-full shadow-2xs">
+          ✓ Approved
+        </span>
+      ) : (
+        <span className="text-[10px] font-bold bg-slate-100 text-slate-600 border border-slate-200 px-2 py-0.5 rounded-full">
+          Draft (Unapproved)
+        </span>
+      )}
+
+      {/* Campaign / Send Status Tag */}
+      {campaignSendStatus === 'opened' ? (
+        <span className="text-[10px] font-extrabold bg-blue-100 text-blue-800 border border-blue-300 px-2 py-0.5 rounded-full shadow-2xs">
+          👁️ Campaign Opened
+        </span>
+      ) : campaignSendStatus === 'delivered' ? (
+        <span className="text-[10px] font-extrabold bg-emerald-100 text-emerald-800 border border-emerald-300 px-2 py-0.5 rounded-full shadow-2xs">
+          📬 Email Delivered
+        </span>
+      ) : campaignSendStatus === 'failed' ? (
+        <span className="text-[10px] font-extrabold bg-red-100 text-red-800 border border-red-300 px-2 py-0.5 rounded-full shadow-2xs">
+          ❌ Delivery Failed
+        </span>
+      ) : inCampaign || campaignSendStatus === 'pending' || campaignSendStatus === 'sending' || campaignSendStatus === 'in_progress' ? (
+        <span className="text-[10px] font-extrabold bg-purple-100 text-purple-900 border border-purple-300 px-2 py-0.5 rounded-full shadow-2xs">
+          🚀 In Campaign Queue
+        </span>
+      ) : (
+        <span className="text-[10px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200 px-2 py-0.5 rounded-full">
+          ⚡ Draft Ready
+        </span>
+      )}
+    </div>
+  );
+}
+
 function StepBadge({ n, label, done, active }: { n: number; label: string; done: boolean; active: boolean }) {
   return (
     <div className="flex items-center gap-1.5">
@@ -966,7 +1014,6 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
 
         const res = await updateLeadDetailsApi(id, {
           currentCompanies: updatedCompanies,
-          approved: updatedCompanies[0]?.approved ?? lead?.approved,
         });
         setLead(res.result);
         showToast(comp.approved ? 'Company draft approved!' : 'Company draft approval removed.', 'success');
@@ -1002,8 +1049,6 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
         };
         const res = await updateLeadDetailsApi(id, {
           currentCompanies: updatedCompanies,
-          emailSubject: updatedCompanies[0]?.emailSubject ?? lead?.emailSubject,
-          emailBody: updatedCompanies[0]?.emailBody ?? lead?.emailBody,
         });
         setLead(res.result);
       }
@@ -1180,8 +1225,13 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
                 <h3 className="text-base font-extrabold text-slate-900 flex items-center gap-1.5">
                   👤 Personal Profile & Direct Info
                 </h3>
-                <div className="text-xs text-blue-700 font-semibold mt-0.5">
-                  Candidate Portfolio & Personal Contact Records
+                <div className="text-xs text-blue-700 font-semibold mt-0.5 flex items-center gap-1 flex-wrap">
+                  <span>Candidate Portfolio & Personal Contact Records</span>
+                  <BoxStatusBadge
+                    approved={lead?.approved}
+                    inCampaign={lead?.inCampaign}
+                    campaignSendStatus={lead?.campaignSendStatus ?? (lead?.emailStatus !== 'pending' ? lead?.emailStatus : null)}
+                  />
                 </div>
               </div>
 
@@ -1529,9 +1579,14 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
                   <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-2 border-b border-purple-100 pb-3">
                     <div>
                       <h3 className="text-base font-extrabold text-slate-900">🏢 {c.companyName}</h3>
-                      <div className="text-xs text-indigo-600 font-semibold mt-0.5 flex items-center gap-1.5">
+                      <div className="text-xs text-indigo-600 font-semibold mt-0.5 flex items-center gap-1.5 flex-wrap">
                         <span>{c.jobTitle}</span>
                         {c.workPeriod && <span className="text-slate-400">({c.workPeriod})</span>}
+                        <BoxStatusBadge
+                          approved={c.approved}
+                          inCampaign={c.inCampaign}
+                          campaignSendStatus={c.campaignSendStatus}
+                        />
                       </div>
                     </div>
 

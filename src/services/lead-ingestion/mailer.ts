@@ -40,11 +40,32 @@ export async function sendOutboundEmail({
       },
     });
 
+    const plainText = (htmlBody || '')
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/p>/gi, '\n\n')
+      .replace(/<[^>]+>/g, '')
+      .replace(/\n\s*\n/g, '\n\n')
+      .trim();
+
+    const senderName = process.env.SMTP_FROM_NAME || process.env.SENDER_NAME || 'Abdul Rafay';
+    const formattedFrom = `"${senderName}" <${user}>`;
+    const randomHex = Math.random().toString(36).substring(2, 10);
+    const customMessageId = `<${Date.now()}.${randomHex}@gmail.com>`;
+
     const info = await transporter.sendMail({
-      from,
+      from: formattedFrom,
       to,
+      replyTo: user,
       subject,
+      text: plainText,
       html: htmlBody,
+      messageId: customMessageId,
+      headers: {
+        'X-Mailer': 'GmailOutreach/1.0',
+        'X-Priority': '3',
+        'X-MSMail-Priority': 'Normal',
+        'Importance': 'Normal',
+      },
     });
 
     return {

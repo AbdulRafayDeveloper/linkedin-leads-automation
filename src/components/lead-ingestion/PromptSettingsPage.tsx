@@ -98,7 +98,7 @@ export default function PromptSettingsPage() {
     <div className="w-full max-w-none px-4 sm:px-8 py-8 space-y-6">
       <PageHeader
         title="Global AI Prompt & Sender Profile Settings"
-        description="Configure your agency rules, custom AI pitch prompt, and Sender Profile details (Name, Title, Portfolio, LinkedIn, Phone, Bio). All email outreach generated will use these instructions."
+        description="Configure your agency rules, custom AI pitch prompt, and Sender Profile details (Name, Portfolio, LinkedIn, Phone). All email outreach generated will use these instructions."
       />
 
       {error && (
@@ -148,7 +148,7 @@ export default function PromptSettingsPage() {
           <Card className="border border-slate-200 bg-white shadow-2xs">
             <CardHeader title="Sender Profile Details (Appended to Signatures & AI Context)" />
             <CardContent className="pt-2 space-y-4">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
                 <div className="space-y-1">
                   <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">
                     Sender Name
@@ -161,32 +161,6 @@ export default function PromptSettingsPage() {
                     className="w-full text-xs font-bold text-slate-800 border border-slate-200 rounded px-3 py-2 focus:ring-1 focus:ring-indigo-500 focus:outline-none"
                   />
                 </div>
-
-                <div className="space-y-1">
-                  <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">
-                    Sender Title / Position
-                  </label>
-                  <input
-                    type="text"
-                    value={senderTitle}
-                    onChange={(e) => setSenderTitle(e.target.value)}
-                    required
-                    className="w-full text-xs font-bold text-slate-800 border border-slate-200 rounded px-3 py-2 focus:ring-1 focus:ring-indigo-500 focus:outline-none"
-                  />
-                </div>
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">
-                  Sender Positioning / Bio Context (Pipe '|' Separated Bullets)
-                </label>
-                <input
-                  type="text"
-                  value={senderPositioning}
-                  onChange={(e) => setSenderPositioning(e.target.value)}
-                  placeholder="builds production web and AI apps | shipped 70+ products | works hands-on with production systems"
-                  className="w-full text-xs font-semibold text-slate-800 border border-slate-200 rounded px-3 py-2 focus:ring-1 focus:ring-indigo-500 focus:outline-none"
-                />
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">

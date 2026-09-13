@@ -23,6 +23,8 @@ export interface CurrentCompanyItem {
   emailSubject?: string | null;
   emailBody?: string | null;
   approved?: boolean;
+  inCampaign?: boolean;
+  campaignSendStatus?: 'pending' | 'sending' | 'delivered' | 'opened' | 'failed' | 'in_progress';
 }
 
 export interface LeadIngestionRecord {
@@ -51,6 +53,8 @@ export interface LeadIngestionRecord {
   emailSubject: string | null;
   emailBody: string | null;
   approved: boolean;
+  inCampaign?: boolean;
+  campaignSendStatus?: 'pending' | 'sending' | 'delivered' | 'opened' | 'failed' | 'in_progress';
   emailStatus: 'pending' | 'in_progress' | 'delivered' | 'opened' | 'failed';
   createdAt: string;
   updatedAt: string;
@@ -107,11 +111,15 @@ export async function generateLeadEmailApi(
   }));
 }
 
-export async function refineLeadEmailApi(id: string, prompt: string): Promise<{ result: LeadIngestionRecord }> {
+export async function refineLeadEmailApi(
+  id: string,
+  prompt: string,
+  companyIndex?: number
+): Promise<{ result: LeadIngestionRecord }> {
   return handle(await fetch(`${BASE}/lead-ingestion/${id}/refine`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ prompt }),
+    body: JSON.stringify({ prompt, companyIndex }),
   }));
 }
 

@@ -679,7 +679,6 @@ function EmailEditModal({
         ...(emailItem.companyIndex !== -1
           ? {
               currentCompanies: companies,
-              approved: companies[0]?.approved ?? nextApproved,
             }
           : {
               approved: nextApproved,
@@ -724,9 +723,6 @@ function EmailEditModal({
         ...(emailItem.companyIndex !== -1
           ? {
               currentCompanies: companies,
-              emailSubject: companies[0]?.emailSubject ?? subjectInput,
-              emailBody: companies[0]?.emailBody ?? bodyHtmlInput,
-              approved: companies[0]?.approved ?? isApproved,
             }
           : {
               emailSubject: subjectInput,
@@ -751,10 +747,16 @@ function EmailEditModal({
     if (!promptText) return;
     setRefining(true);
     try {
-      const response = await refineLeadEmailApi(emailItem.leadId, promptText);
+      const response = await refineLeadEmailApi(emailItem.leadId, promptText, emailItem.companyIndex);
       onLeadUpdated(response.result);
-      setSubjectInput(response.result.emailSubject || subjectInput);
-      setBodyHtmlInput(response.result.emailBody || bodyHtmlInput);
+      if (emailItem.companyIndex !== -1) {
+        const updatedComp = response.result.currentCompanies?.[emailItem.companyIndex];
+        setSubjectInput(updatedComp?.emailSubject || subjectInput);
+        setBodyHtmlInput(updatedComp?.emailBody || bodyHtmlInput);
+      } else {
+        setSubjectInput(response.result.emailSubject || subjectInput);
+        setBodyHtmlInput(response.result.emailBody || bodyHtmlInput);
+      }
       setRefinePrompt('');
       showToast('✨ AI refined email content successfully!', 'success');
     } catch (err) {
@@ -1372,7 +1374,6 @@ function CompactEmailCard({
         ...(emailItem.companyIndex !== -1
           ? {
               currentCompanies: companies,
-              approved: companies[0]?.approved ?? nextApproved,
             }
           : {
               approved: nextApproved,
@@ -1625,15 +1626,18 @@ export default function OutreachEmailsPage() {
 
     const companies = lead.currentCompanies ?? [];
 
-    // 1. Render all Company-specific Drafts
+    // 1. Render Company-specific Drafts (Exclude those already in a campaign)
     companies.forEach((comp, idx) => {
       if (comp.emailSubject && comp.emailBody) {
+        const isCompInCampaign = comp.inCampaign || (comp.campaignSendStatus && comp.campaignSendStatus !== 'pending');
+        if (isCompInCampaign) return;
+
         const compEmails = comp.companyEmails ?? [];
         const targetEm = compEmails[0] ?? '';
         const status = targetEm ? (verifiedMap.get(targetEm) ?? 'pending') : 'pending';
         const computedSendStatus: GeneratedEmailItem['sendStatus'] = !targetEm.trim()
           ? 'no_contact_email'
-          : (lead.emailStatus as GeneratedEmailItem['sendStatus']) ?? 'pending';
+          : (comp.campaignSendStatus as GeneratedEmailItem['sendStatus']) ?? (lead.emailStatus as GeneratedEmailItem['sendStatus']) ?? 'pending';
 
         allGeneratedEmailItems.push({
           item: {
@@ -1658,34 +1662,38 @@ export default function OutreachEmailsPage() {
       }
     });
 
-    // 2. Render Personal / Primary Draft (always rendered if subject & body exist)
+    // 2. Render Personal / Primary Draft (Exclude if already in a campaign)
     if (lead.emailSubject && lead.emailBody) {
-      const targetEm = lead.email ?? '';
-      const status = targetEm ? (verifiedMap.get(targetEm) ?? lead.emailValidationStatus ?? 'pending') : 'pending';
-      const computedSendStatus: GeneratedEmailItem['sendStatus'] = !targetEm.trim()
-        ? 'no_contact_email'
-        : (lead.emailStatus as GeneratedEmailItem['sendStatus']) ?? 'pending';
+      const isPersonalInCampaign = lead.inCampaign || (lead.campaignSendStatus && lead.campaignSendStatus !== 'pending') || lead.emailStatus === 'in_progress' || lead.emailStatus === 'delivered' || lead.emailStatus === 'opened';
 
-      allGeneratedEmailItems.push({
-        item: {
-          id: `${lead._id}-personal`,
-          leadId: lead._id,
-          clientId: lead.clientId,
-          candidateName: lead.fullName || 'Candidate Profile',
-          clientName: (lead as unknown as { clientName?: string }).clientName || 'Client Profile',
-          linkedinUrl: (lead as unknown as { linkedinUrl?: string }).linkedinUrl || null,
-          companyName: lead.companyName || 'Personal / Direct Email',
-          jobTitle: lead.jobTitle || 'Personal Contact',
-          targetEmail: targetEm,
-          emailStatus: status,
-          subject: lead.emailSubject,
-          bodyHtml: lead.emailBody,
-          approved: lead.approved ?? false,
-          sendStatus: computedSendStatus,
-          companyIndex: -1, // -1 denotes root personal draft
-        },
-        leadDoc: lead,
-      });
+      if (!isPersonalInCampaign) {
+        const targetEm = lead.email ?? '';
+        const status = targetEm ? (verifiedMap.get(targetEm) ?? lead.emailValidationStatus ?? 'pending') : 'pending';
+        const computedSendStatus: GeneratedEmailItem['sendStatus'] = !targetEm.trim()
+          ? 'no_contact_email'
+          : (lead.campaignSendStatus as GeneratedEmailItem['sendStatus']) ?? (lead.emailStatus as GeneratedEmailItem['sendStatus']) ?? 'pending';
+
+        allGeneratedEmailItems.push({
+          item: {
+            id: `${lead._id}-personal`,
+            leadId: lead._id,
+            clientId: lead.clientId,
+            candidateName: lead.fullName || 'Candidate Profile',
+            clientName: (lead as unknown as { clientName?: string }).clientName || 'Client Profile',
+            linkedinUrl: (lead as unknown as { linkedinUrl?: string }).linkedinUrl || null,
+            companyName: lead.companyName || 'Personal / Direct Email',
+            jobTitle: lead.jobTitle || 'Personal Contact',
+            targetEmail: targetEm,
+            emailStatus: status,
+            subject: lead.emailSubject,
+            bodyHtml: lead.emailBody,
+            approved: lead.approved ?? false,
+            sendStatus: computedSendStatus,
+            companyIndex: -1, // -1 denotes root personal draft
+          },
+          leadDoc: lead,
+        });
+      }
     }
   });
 
