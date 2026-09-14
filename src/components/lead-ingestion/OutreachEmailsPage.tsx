@@ -173,7 +173,7 @@ function RichTextEditor({
         onBlur={() => {
           isTypingRef.current = false;
         }}
-        className={`min-h-[180px] p-4 text-sm leading-relaxed focus:outline-none ${
+        className={`email-body min-h-[180px] p-4 text-sm leading-relaxed focus:outline-none ${
           readOnly ? 'bg-slate-50 text-slate-600 cursor-not-allowed select-text' : 'bg-white text-slate-800'
         }`}
       />
@@ -1231,7 +1231,7 @@ function EmailEditModal({
               ) : (
                 <div className="bg-slate-50/70 border border-slate-200 rounded-md p-4 min-h-[160px] text-xs text-slate-800 leading-relaxed overflow-x-auto select-text">
                   {bodyHtmlInput ? (
-                    <div dangerouslySetInnerHTML={{ __html: bodyHtmlInput }} />
+                    <div className="email-body" dangerouslySetInnerHTML={{ __html: bodyHtmlInput }} />
                   ) : (
                     <span className="text-slate-400 italic font-medium">No email body generated yet. Crawl website above to generate email draft.</span>
                   )}

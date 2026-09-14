@@ -125,19 +125,10 @@ test.describe.serial('LinkedIn lead workflow', () => {
     await deleteTestLeads(request, baseURL!);
   });
 
-  test('home page loads with stats and navigation buttons', async ({ page }) => {
-    const errors: string[] = [];
-    page.on('console', (msg) => {
-      if (msg.type() === 'error') errors.push(msg.text());
-    });
-
+  test('the root URL redirects to the dashboard', async ({ page }) => {
     await page.goto('/');
-    await expect(page.getByRole('heading', { name: 'LeadForge' })).toBeVisible();
-    await expect(page.getByText('Total Leads')).toBeVisible();
-    await expect(page.locator('main').getByRole('link', { name: 'Process New Lead' })).toBeVisible();
-    await expect(page.locator('main').getByRole('link', { name: 'View My Leads' })).toBeVisible();
-
-    expect(errors, `Console errors on home page: ${errors.join('; ')}`).toEqual([]);
+    await expect(page).toHaveURL(/\/dashboard$/);
+    await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible();
   });
 
   test('sidebar navigation moves between pages and highlights the active link', async ({ page }) => {

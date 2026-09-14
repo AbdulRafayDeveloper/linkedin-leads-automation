@@ -24,6 +24,12 @@ const nextConfig: NextConfig = {
     ];
   },
 
+  // The dashboard is the app's home page; there is no page at "/".
+  // Temporary (307), so browsers don't cache it forever if "/" ever gets a page again.
+  async redirects() {
+    return [{ source: "/", destination: "/dashboard", permanent: false }];
+  },
+
   // app/manifest.ts serves /manifest.webmanifest; these are the other names
   // browsers, audit tools and older guides look for.
   async rewrites() {

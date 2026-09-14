@@ -530,7 +530,7 @@ function InlineRichDraftEditor({
             suppressContentEditableWarning
             onInput={(e) => setBody(e.currentTarget.innerHTML)}
             onBlur={(e) => setBody(e.currentTarget.innerHTML)}
-            className="w-full text-xs text-slate-800 leading-relaxed min-h-[160px] p-3.5 border border-slate-300 rounded-b-md focus:ring-2 focus:ring-indigo-500 focus:outline-none bg-white prose prose-slate max-w-none cursor-text"
+            className="w-full text-xs text-slate-800 leading-relaxed min-h-[160px] p-3.5 border border-slate-300 rounded-b-md focus:ring-2 focus:ring-indigo-500 focus:outline-none bg-white email-body max-w-none cursor-text"
           />
         ) : (
           <textarea

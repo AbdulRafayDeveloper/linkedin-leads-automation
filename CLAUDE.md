@@ -80,7 +80,7 @@ Models: `Client`, `LeadIngestion`, `Campaign`, `PromptSetting`. Code lives in `s
 
 ### 2. Legacy: Lead processing / enrichment
 
-Model: `Lead` (collection `leads`). Code lives in `src/lib/{processLead.ts,parser,research,email,enrichment,db/operations}` and routes `POST /api/process`, `/api/leads/[id]` (GET/PUT/DELETE), `/api/leads/[id]/{enrich,emails,find-website}`, `/api/leads/search` and `/api/leads/filter`. The UI is `/process` (`LeadProcessingPage`), `/` (old home stats) and `components/leads/*`. The sidebar does not link to `/process` or `/`. (`/dashboard` is now the current-pipeline dashboard, not a legacy page.)
+Model: `Lead` (collection `leads`). Code lives in `src/lib/{processLead.ts,parser,research,email,enrichment,db/operations}` and routes `POST /api/process`, `/api/leads/[id]` (GET/PUT/DELETE), `/api/leads/[id]/{enrich,emails,find-website}`, `/api/leads/search` and `/api/leads/filter`. The UI is `/process` (`LeadProcessingPage`) and `components/leads/*`. The sidebar does not link to `/process`. There is no page at `/`: `next.config.ts` redirects it (307) to `/dashboard`, the current-pipeline dashboard and the app's home page.
 
 - `processLeadContent`: `extractLeadWithAi` (falls back to the regex `parseLeadContent`) → `researchCompany` → `discoverEmail` → `validateEmail` → `generatePersonalizedEmail`. `/api/process` saves the lead, then runs `enrichLead` via `after()`. That crawls with robots.txt support (`research/crawler.ts`, `robots.ts`), searches DuckDuckGo, verifies the website with AI and validates emails. `enrichLead` claims the lead atomically through `enrichmentStatus`, so don't reset that status before calling it.
 

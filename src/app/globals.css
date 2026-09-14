@@ -40,6 +40,22 @@ body {
   border-radius: 9999px;
 }
 
+/* Email drafts shown in the app (editors and previews). Tailwind's reset sets
+   p margins to 0, which would run paragraphs together; this matches the gap
+   the email gets when sent (see emailHtml.ts). An empty <p></p> adds no extra gap. */
+.email-body p {
+  margin: 0 0 1em;
+}
+
+.email-body p:last-child {
+  margin-bottom: 0;
+}
+
+.email-body a {
+  color: #4f46e5;
+  text-decoration: underline;
+}
+
 @keyframes fade-in {
   from {
     opacity: 0;

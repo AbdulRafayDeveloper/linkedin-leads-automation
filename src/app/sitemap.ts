@@ -10,13 +10,14 @@ export default function sitemap(): MetadataRoute.Sitemap {
   const navPaths = [...NAV_SECTIONS.flatMap((section) => section.items), SETTINGS_ITEM].map(
     (item) => item.href
   );
-  const paths = Array.from(new Set(['/', ...navPaths, '/process']));
+  // "/" only redirects to /dashboard, so it isn't listed.
+  const paths = Array.from(new Set([...navPaths, '/process']));
   const lastModified = new Date();
 
   return paths.map((path) => ({
     url: absoluteUrl(path),
     lastModified,
     changeFrequency: 'weekly',
-    priority: path === '/' ? 1 : path === '/process' ? 0.5 : 0.8,
+    priority: path === '/dashboard' ? 1 : path === '/process' ? 0.5 : 0.8,
   }));
 }

@@ -3,6 +3,7 @@ import { connectToMongoDB } from '@/lib/db/connection';
 import { Campaign } from '@/lib/db/models/Campaign';
 import { LeadIngestion } from '@/lib/db/models/LeadIngestion';
 import { sendOutboundEmail } from '@/services/lead-ingestion/mailer';
+import { withParagraphSpacing } from '@/services/lead-ingestion/emailHtml';
 import { jsonError, jsonOk } from '@/lib/api/response';
 import { getSiteUrl } from '@/lib/config/site';
 import mongoose from 'mongoose';
@@ -78,7 +79,8 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
         const trackingPixel = enableTracking
           ? `<img src="${appUrl}/api/lead-ingestion/${leadIdStr}/track?campaignId=${campaignIdStr}&itemId=${itemIdStr}" width="1" height="1" style="display:none;" alt="" />`
           : '';
-        const htmlBodyToSend = enableTracking ? `${item.bodyHtml || ''}\n\n${trackingPixel}` : (item.bodyHtml || '');
+        const bodyHtml = withParagraphSpacing(item.bodyHtml || '');
+        const htmlBodyToSend = enableTracking ? `${bodyHtml}\n\n${trackingPixel}` : bodyHtml;
 
         const sendResult = await sendOutboundEmail({
           to: item.recipientEmail,
