@@ -11,12 +11,6 @@ export async function GET() {
       setting = await PromptSetting.create({
         key: 'global_outreach_prompt',
         promptText: 'Focus on highlighting custom software development capabilities, speed of delivery, and professional partnership.',
-        senderName: 'Abdul Rafay',
-        senderTitle: 'Senior Full Stack AI Developer',
-        senderPositioning: 'builds production web and AI applications|has shipped 70+ production-ready SaaS products and MVPs|works hands-on with real-world production systems',
-        senderPortfolioUrl: 'https://rafaytech.vercel.app',
-        senderLinkedinUrl: 'https://www.linkedin.com/in/abdulrafay-ai-mern',
-        senderPhone: '+92 306 0815246',
       });
     }
 
@@ -31,15 +25,7 @@ export async function GET() {
 
 export async function PUT(request: NextRequest) {
   try {
-    const body = (await request.json()) as {
-      promptText?: string;
-      senderName?: string;
-      senderTitle?: string;
-      senderPositioning?: string;
-      senderPortfolioUrl?: string;
-      senderLinkedinUrl?: string;
-      senderPhone?: string;
-    };
+    const body = (await request.json()) as { promptText?: string };
 
     await connectToMongoDB();
     let setting = await PromptSetting.findOne({ key: 'global_outreach_prompt' });
@@ -48,12 +34,6 @@ export async function PUT(request: NextRequest) {
     }
 
     if (body.promptText !== undefined) setting.promptText = body.promptText.trim();
-    if (body.senderName !== undefined) setting.senderName = body.senderName.trim();
-    if (body.senderTitle !== undefined) setting.senderTitle = body.senderTitle.trim();
-    if (body.senderPositioning !== undefined) setting.senderPositioning = body.senderPositioning.trim();
-    if (body.senderPortfolioUrl !== undefined) setting.senderPortfolioUrl = body.senderPortfolioUrl.trim();
-    if (body.senderLinkedinUrl !== undefined) setting.senderLinkedinUrl = body.senderLinkedinUrl.trim();
-    if (body.senderPhone !== undefined) setting.senderPhone = body.senderPhone.trim();
 
     const saved = await setting.save();
     return jsonOk({ setting: saved.toObject() });

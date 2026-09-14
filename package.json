@@ -1,5 +1,5 @@
 {
-  "name": "linkedin-leads-automation",
+  "name": "leadforge",
   "version": "0.1.0",
   "private": true,
   "scripts": {
@@ -10,6 +10,7 @@
     "test": "jest",
     "test:coverage": "jest --coverage",
     "test:e2e": "playwright test",
+    "brand:assets": "ts-node --transpile-only -P scripts/tsconfig.json scripts/generate-brand-assets.ts",
     "postinstall": "playwright install chromium"
   },
   "dependencies": {
@@ -46,6 +47,7 @@
     "mongodb-memory-server": "^11.2.0",
     "node-mocks-http": "^1.18.1",
     "playwright-core": "^1.62.1",
+    "sharp": "^0.35.4",
     "tailwindcss": "^4",
     "ts-node": "^10.9.2",
     "typescript": "^5"

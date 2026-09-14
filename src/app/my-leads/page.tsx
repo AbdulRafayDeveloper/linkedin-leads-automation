@@ -258,8 +258,8 @@ export default function MyLeadsPage() {
       {/* Top Header Navigation */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-200 pb-4">
         <PageHeader
-          title="My Leads"
-          description="Browse candidate lead intelligence, LinkedIn profile links, personal & company email boxes, and SMTP status."
+          title="Leads"
+          description="Every imported prospect with their companies, contact emails and verification status."
         />
         <div className="flex items-center gap-3">
           <Link href="/lead-ingestion">

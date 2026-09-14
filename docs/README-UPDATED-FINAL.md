@@ -1,5 +1,5 @@
 # UPDATED DOCUMENTATION PACKAGE
-## LinkedIn Lead Research Engine - MongoDB + Web Dashboard Edition
+## LeadForge - MongoDB + Web Dashboard Edition
 
 **Status:** ✅ COMPLETE - All documentation updated and ready  
 **Architecture:** Next.js + MongoDB Atlas (free) + Web Dashboard  
@@ -236,7 +236,7 @@ Each lead document has:
 ### Page 4: Sidebar Navigation
 ```
 ┌─────────────────┐
-│ Lead Engine     │
+│ LeadForge       │
 ├─────────────────┤
 │ 🏠 Dashboard    │
 │ ➕ New Lead     │

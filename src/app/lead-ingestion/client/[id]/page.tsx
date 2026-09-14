@@ -1164,7 +1164,7 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
           </Link>
           <PageHeader
             title={`${fullName}`}
-            description="Candidate Profile & Lead Intelligence Workspace"
+            description="Lead profile"
           />
         </div>
         <div className="flex items-center gap-2">

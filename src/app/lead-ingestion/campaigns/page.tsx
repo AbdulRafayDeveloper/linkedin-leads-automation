@@ -1,8 +1,14 @@
-'use client';
-
 import { Suspense } from 'react';
 import CampaignsDashboardPage from '@/components/lead-ingestion/CampaignsDashboardPage';
 import { LoaderIcon } from '@/components/ui/Icons';
+import { pageMetadata } from '@/lib/seo/metadata';
+
+export const metadata = pageMetadata({
+  title: 'Campaigns',
+  description:
+    'Send approved cold emails as campaigns, one at a time with random delays, and track deliveries, failures and opens.',
+  path: '/lead-ingestion/campaigns',
+});
 
 export default function Page() {
   return (

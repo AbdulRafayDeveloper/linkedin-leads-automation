@@ -1,5 +1,5 @@
 # ENVIRONMENT VARIABLES & CONFIGURATION DOCUMENT (UPDATED)
-## LinkedIn Sales Navigator Lead Research & Outreach Automation System - MongoDB Edition
+## LeadForge: LinkedIn Sales Navigator Lead Research & Outreach Automation System - MongoDB Edition
 
 **Purpose:** Define all environment variables required for MongoDB setup and deployment  
 **File Location:** `.env.local` (root of Next.js project)  
@@ -51,7 +51,7 @@
 - **Obtain From:**
   1. Go to https://www.mongodb.com/cloud/atlas/
   2. Sign up for free account (or log in)
-  3. Create new project called "Lead Research Engine"
+  3. Create new project called "LeadForge"
   4. Create new cluster (M0 free tier)
   5. Click "Connect"
   6. Choose "Connect your application"
@@ -235,7 +235,7 @@ When deploying to Vercel, set these environment variables:
 
 1. You should see "Create a deployment" screen
 2. Click "Create" (for M0 free cluster)
-3. Name your cluster: "Lead Research Engine"
+3. Name your cluster: "LeadForge"
 4. Choose provider: AWS (default is fine)
 5. Choose region: Closest to you or `us-east-1`
 6. Click "Create Deployment"

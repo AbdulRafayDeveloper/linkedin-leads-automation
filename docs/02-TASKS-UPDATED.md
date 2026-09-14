@@ -1,7 +1,7 @@
 # TASKS DOCUMENT (UPDATED)
-## LinkedIn Sales Navigator Lead Research & Outreach Automation System - MongoDB Edition
+## LeadForge: LinkedIn Sales Navigator Lead Research & Outreach Automation System - MongoDB Edition
 
-**Project:** Next.js Lead Intelligence Engine  
+**Project:** LeadForge (Next.js)  
 **Database:** MongoDB Atlas (Free Tier)  
 **Total Phases:** 10  
 **Total Tasks:** Main tasks + subtasks  

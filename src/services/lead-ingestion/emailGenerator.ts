@@ -2,7 +2,6 @@ import { connectToMongoDB } from '@/lib/db/connection';
 import { LeadIngestion, type LeadIngestionDocument } from '@/lib/db/models/LeadIngestion';
 import { PromptSetting } from '@/lib/db/models/PromptSetting';
 import { getFallbackChatModels } from '@/lib/ai/provider';
-import { senderProfile, formatSenderSignature, type SenderProfile } from '@/lib/config/senderProfile';
 import mongoose from 'mongoose';
 
 export interface EmailGeneratorModel {
@@ -54,17 +53,19 @@ function extractContent(raw: { content: unknown } | string): string {
   return '';
 }
 
+/**
+ * The global prompt from AI Settings (plus any per-request prompt) is the only
+ * sender context the AI gets: there is no separate sender profile or appended
+ * signature, so the sign-off has to come from those instructions.
+ */
 export function buildOutreachPrompt(
   recipientFirstName: string,
   summary: string,
   websiteUrl: string | null,
-  sender: SenderProfile,
   userPrompt?: string,
   globalPromptText?: string
 ): string {
-  let prompt = `You are ${sender.name}, a ${sender.title}. Context about you: ${sender.positioning.join('; ')}.
-
-You are writing a short, highly personalized cold outreach email in clean HTML.
+  let prompt = `You are writing a short, highly personalized cold outreach email in clean HTML on behalf of the sender described in the instructions below.
 
 Recipient's first name: ${recipientFirstName}
 Recipient's company details/summary: ${summary}
@@ -78,7 +79,7 @@ Writing rules (follow exactly):
 3. Start the body with a paragraph: "<p>Hi [Recipient's first name],</p>".
 4. Subject line: maximum 350 characters, specific to this lead, no dashes or em-dashes.
 5. Body: short, clear, conversational. Under 20 seconds to read.
-6. Do NOT include any signature, sign-off, or links in the body; those are added separately.`;
+6. End the email with the sign-off, name and contact details described in the sender's instructions below. If they don't describe one, end with a short sign-off. Never invent contact details and never use placeholders like [Your Name].`;
 
   const combinedCustomInstruction = [globalPromptText, userPrompt]
     .filter(Boolean)
@@ -86,7 +87,7 @@ Writing rules (follow exactly):
     .trim();
 
   if (combinedCustomInstruction) {
-    prompt += `\n\nMandatory Style & Pitch Instructions (Apply Strictly):\n"${combinedCustomInstruction}"`;
+    prompt += `\n\nMandatory Sender, Style & Pitch Instructions (Apply Strictly; they override the writing rules above if they conflict):\n"""\n${combinedCustomInstruction}\n"""`;
   }
 
   prompt += `\n\nRespond ONLY with strict JSON in this exact shape:
@@ -102,10 +103,9 @@ export async function generateLeadEmail(
     companyIndex?: number;
     forceRegenerate?: boolean;
     models?: EmailGeneratorModel[];
-    sender?: SenderProfile;
   } = {}
 ): Promise<LeadIngestionDocument> {
-  const { userPrompt, companyIndex, forceRegenerate = false, models, sender = senderProfile } = options;
+  const { userPrompt, companyIndex, forceRegenerate = false, models } = options;
   await connectToMongoDB();
 
   if (!mongoose.Types.ObjectId.isValid(leadId)) {
@@ -120,17 +120,6 @@ export async function generateLeadEmail(
   // Retrieve persistent global custom prompt setting
   const promptSetting = await PromptSetting.findOne({ key: 'global_outreach_prompt' });
   const globalPromptText = promptSetting?.promptText || '';
-
-  const activeSender: SenderProfile = {
-    name: promptSetting?.senderName || sender.name,
-    title: promptSetting?.senderTitle || sender.title,
-    positioning: promptSetting?.senderPositioning
-      ? promptSetting.senderPositioning.split('|').map((s) => s.trim()).filter(Boolean)
-      : sender.positioning,
-    portfolioUrl: promptSetting?.senderPortfolioUrl || sender.portfolioUrl,
-    linkedinUrl: promptSetting?.senderLinkedinUrl || sender.linkedinUrl,
-    phone: promptSetting?.senderPhone || sender.phone,
-  };
 
   const firstName = firstNameOf(doc.fullName || 'there');
   const candidateModels = models ?? (await getFallbackChatModels()) as unknown as EmailGeneratorModel[];
@@ -158,7 +147,7 @@ export async function generateLeadEmail(
       const compJob = comp.jobTitle || 'Professional';
       const roleDetails = comp.summary || (comp as unknown as { roleSummary?: string }).roleSummary || '';
       const compSummary = `${doc.summary || ''}${roleDetails ? ` | Role details: ${roleDetails}` : ''} | Target Company: ${compName} (${compJob})`;
-      const prompt = buildOutreachPrompt(firstName, compSummary, comp.websiteUrl, activeSender, userPrompt, globalPromptText);
+      const prompt = buildOutreachPrompt(firstName, compSummary, comp.websiteUrl, userPrompt, globalPromptText);
 
       for (const model of candidateModels) {
         try {
@@ -174,12 +163,11 @@ export async function generateLeadEmail(
           if (subject.length > 350) subject = subject.slice(0, 350);
 
           const cleanBody = ensureStartsWithFirstNameHtml(parsed.body, firstName);
-          const signatureHtml = `<p>${formatSenderSignature(activeSender).replace(/\n/g, '<br />')}</p>`;
 
           const targetComp = doc.currentCompanies[i];
           if (targetComp) {
             targetComp.emailSubject = subject;
-            targetComp.emailBody = `${cleanBody}\n\n${signatureHtml}`;
+            targetComp.emailBody = cleanBody;
             targetComp.approved = false;
             doc.markModified('currentCompanies');
           }
@@ -204,7 +192,6 @@ export async function generateLeadEmail(
         firstName,
         personalSummary,
         personalWebsite,
-        activeSender,
         userPrompt,
         globalPromptText
       );
@@ -222,11 +209,8 @@ export async function generateLeadEmail(
           let subject = stripDashes(parsed.subject);
           if (subject.length > 350) subject = subject.slice(0, 350);
 
-          const cleanBody = ensureStartsWithFirstNameHtml(parsed.body, firstName);
-          const signatureHtml = `<p>${formatSenderSignature(activeSender).replace(/\n/g, '<br />')}</p>`;
-
           doc.emailSubject = subject;
-          doc.emailBody = `${cleanBody}\n\n${signatureHtml}`;
+          doc.emailBody = ensureStartsWithFirstNameHtml(parsed.body, firstName);
           doc.emailStatus = 'pending';
           doc.approved = false;
           break;
@@ -245,8 +229,7 @@ export async function generateLeadEmail(
 export async function refineEmailWithAi(
   leadId: string,
   refinementPrompt: string,
-  modelsOrOptions?: EmailGeneratorModel[] | { companyIndex?: number; models?: EmailGeneratorModel[]; sender?: SenderProfile },
-  senderParam: SenderProfile = senderProfile,
+  modelsOrOptions?: EmailGeneratorModel[] | { companyIndex?: number; models?: EmailGeneratorModel[] },
   companyIndexParam?: number
 ): Promise<LeadIngestionDocument> {
   await connectToMongoDB();
@@ -262,12 +245,10 @@ export async function refineEmailWithAi(
 
   let companyIndex: number | undefined = companyIndexParam;
   let models: EmailGeneratorModel[] | undefined;
-  let sender: SenderProfile = senderParam;
 
   if (modelsOrOptions && !Array.isArray(modelsOrOptions) && typeof modelsOrOptions === 'object') {
     companyIndex = modelsOrOptions.companyIndex ?? companyIndexParam;
     models = modelsOrOptions.models;
-    if (modelsOrOptions.sender) sender = modelsOrOptions.sender;
   } else if (Array.isArray(modelsOrOptions)) {
     models = modelsOrOptions;
   }
@@ -282,9 +263,7 @@ export async function refineEmailWithAi(
     ? (targetComp?.emailBody || '(no body)')
     : (doc.emailBody || '(no body)');
 
-  const prompt = `You are ${sender.name}, a ${sender.title}. Context about you: ${sender.positioning.join('; ')}.
-
-You are refining a cold outreach email draft for a lead.
+  const prompt = `You are refining a cold outreach email draft for a lead.
 
 Current Subject: "${currentSubject}"
 Current HTML Body: "${currentBody}"

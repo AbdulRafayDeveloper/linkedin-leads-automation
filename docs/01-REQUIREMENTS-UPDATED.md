@@ -1,7 +1,7 @@
 # REQUIREMENTS DOCUMENT (UPDATED)
-## LinkedIn Sales Navigator Lead Research & Outreach Automation System
+## LeadForge: LinkedIn Sales Navigator Lead Research & Outreach Automation System
 
-**Project Name:** LinkedIn Lead Intelligence & Outreach Engine  
+**Project Name:** LeadForge  
 **Version:** 2.0 (MongoDB Edition)  
 **Status:** In Development  
 **Build Environment:** Next.js  

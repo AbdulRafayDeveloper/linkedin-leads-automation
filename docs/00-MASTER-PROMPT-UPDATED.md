@@ -1,5 +1,5 @@
 # MASTER PROMPT (UPDATED - MONGODB EDITION)
-## Build Complete LinkedIn Sales Navigator Lead Research & Outreach System with Web Dashboard
+## Build LeadForge: LinkedIn Sales Navigator Lead Research & Outreach System with Web Dashboard
 
 **Status:** Execute this single prompt in Claude Code  
 **Duration:** 3-5 hours of automated implementation  
@@ -722,7 +722,7 @@ npm start      # Should start without errors
 ```
 ╔════════════════════════════════════════════════════════════╗
 ║        PROJECT COMPLETION REPORT                           ║
-║   LinkedIn Sales Navigator Lead Intelligence Engine        ║
+║                         LeadForge                          ║
 ║            MongoDB + Web Dashboard Edition                 ║
 ╚════════════════════════════════════════════════════════════╝
 

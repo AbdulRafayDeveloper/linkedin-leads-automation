@@ -4,6 +4,7 @@ import { Campaign } from '@/lib/db/models/Campaign';
 import { LeadIngestion } from '@/lib/db/models/LeadIngestion';
 import { sendOutboundEmail } from '@/services/lead-ingestion/mailer';
 import { jsonError, jsonOk } from '@/lib/api/response';
+import { getSiteUrl } from '@/lib/config/site';
 import mongoose from 'mongoose';
 
 export const maxDuration = 60;
@@ -33,7 +34,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     campaign.status = 'running';
     await campaign.save();
 
-    const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
+    const appUrl = getSiteUrl();
 
     // Identify target items to process
     let targetItems = campaign.items;
@@ -93,11 +94,13 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
         } else {
           item.status = 'failed';
           item.errorMessage = sendResult.error || 'SMTP delivery failure';
+          item.failedAt = new Date();
           batchFailure++;
         }
       } catch (err) {
         item.status = 'failed';
         item.errorMessage = err instanceof Error ? err.message : 'Send exception occurred';
+        item.failedAt = new Date();
         batchFailure++;
       }
 

@@ -17,6 +17,7 @@ export interface CampaignItem {
   errorMessage?: string | null;
   sentAt?: Date | null;
   openedAt?: Date | null;
+  failedAt?: Date | null;
 }
 
 export interface CampaignDocument extends Document {
@@ -52,6 +53,7 @@ const CampaignItemSchema = new Schema<CampaignItem>(
     errorMessage: { type: String, default: null },
     sentAt: { type: Date, default: null },
     openedAt: { type: Date, default: null },
+    failedAt: { type: Date, default: null },
   },
   { _id: true }
 );

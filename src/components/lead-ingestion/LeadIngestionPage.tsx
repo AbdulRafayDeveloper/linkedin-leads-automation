@@ -85,13 +85,13 @@ export default function LeadIngestionPage() {
     <div className="w-full max-w-none px-4 sm:px-8 py-8 space-y-8">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <PageHeader
-          title="Lead Ingestion & Intelligence"
-          description="Paste raw LinkedIn profile data. AI extracts candidate details and redirects immediately to the candidate profile workspace."
+          title="New Lead"
+          description="Paste a LinkedIn or Sales Navigator profile. Contacts are found, verified and drafted automatically."
         />
         <Link href="/lead-ingestion/emails">
           <Button variant="outline" className="flex items-center gap-2 border-indigo-200 text-indigo-700 hover:bg-indigo-50 text-sm">
             <MailIcon width={15} height={15} />
-            Outreach Emails Directory
+            View drafts
           </Button>
         </Link>
       </div>

@@ -21,6 +21,7 @@ jest.mock('@/lib/db/models/LeadIngestion', () => {
     websiteUrl: 'https://northwind.com',
     emailSubject: null as string | null,
     emailBody: null as string | null,
+    markModified: jest.fn(),
     save: jest.fn().mockImplementation(function (this: any) {
       return Promise.resolve(this);
     }),
@@ -33,6 +34,14 @@ jest.mock('@/lib/db/models/LeadIngestion', () => {
   };
 });
 
+jest.mock('@/lib/db/models/PromptSetting', () => ({
+  PromptSetting: {
+    findOne: jest.fn().mockResolvedValue({
+      promptText: 'I am Abdul Rafay. Sign off with my portfolio link.',
+    }),
+  },
+}));
+
 import {
   generateLeadEmail,
   buildOutreachPrompt,
@@ -41,54 +50,37 @@ import {
 } from '../emailGenerator';
 
 describe('emailGenerator', () => {
-  const senderMock = {
-    name: 'Abdul Rafay',
-    title: 'Senior Developer',
-    positioning: ['highly skilled developer'],
-    portfolioUrl: 'https://portfolio.com',
-    linkedinUrl: 'https://linkedin.com',
-    phone: '+92 306 0000000',
-  };
-
-  it('builds the outreach prompt correctly with custom user prompt style', () => {
-    const promptWithoutStyle = buildOutreachPrompt(
-      'Jane',
-      'Jane is a developer.',
-      'https://northwind.com',
-      senderMock
-    );
+  it('builds the outreach prompt from the global and per-request prompts only', () => {
+    const promptWithoutStyle = buildOutreachPrompt('Jane', 'Jane is a developer.', 'https://northwind.com');
     expect(promptWithoutStyle).toContain('Jane');
     expect(promptWithoutStyle).toContain('https://northwind.com');
-    expect(promptWithoutStyle).not.toContain('Special style/type instructions');
+    expect(promptWithoutStyle).not.toContain('Mandatory Sender, Style & Pitch Instructions');
 
     const promptWithStyle = buildOutreachPrompt(
       'Jane',
       'Jane is a developer.',
       'https://northwind.com',
-      senderMock,
-      'Write it in a funny tone'
+      'Write it in a funny tone',
+      'I am Abdul Rafay.'
     );
-    expect(promptWithStyle).toContain('Special style/type instructions');
-    expect(promptWithStyle).toContain('Write it in a funny tone');
+    expect(promptWithStyle).toContain('Mandatory Sender, Style & Pitch Instructions');
+    expect(promptWithStyle).toContain('I am Abdul Rafay.\nWrite it in a funny tone');
   });
 
-  it('invokes the LLM and successfully updates subject/body fields', async () => {
-    const mockModel: EmailGeneratorModel = {
-      invoke: jest.fn().mockResolvedValue({
-        content: JSON.stringify({
-          subject: 'Outreach to Jane Doe',
-          body: 'Hello Jane, I noticed your MERN skills.',
-        }),
+  it('passes the saved global prompt to the LLM and stores the body without an appended signature', async () => {
+    const invoke = jest.fn().mockResolvedValue({
+      content: JSON.stringify({
+        subject: 'Outreach to Jane Doe',
+        body: '<p>Hi Jane,</p><p>I noticed your MERN skills.</p>',
       }),
-    };
+    });
+    const mockModel: EmailGeneratorModel = { invoke };
 
-    const leadId = 'mock-id-123';
-    const result = (await generateLeadEmail(leadId, { models: [mockModel], sender: senderMock })) as any;
+    const result = (await generateLeadEmail('mock-id-123', { models: [mockModel] })) as any;
 
+    expect(invoke.mock.calls[0][0]).toContain('I am Abdul Rafay. Sign off with my portfolio link.');
     expect(result.emailSubject).toBe('Outreach to Jane Doe');
-    expect(result.emailBody).toContain('Hello Jane, I noticed your MERN skills.');
-    expect(result.emailBody).toContain('Portfolio: https://portfolio.com');
-    expect(result.emailBody).toContain('Best regards,<br />Abdul Rafay');
+    expect(result.emailBody).toBe('<p>Hi Jane,</p><p>I noticed your MERN skills.</p>');
   });
 
   it('refines draft email body and subject based on user prompts', async () => {
@@ -101,8 +93,7 @@ describe('emailGenerator', () => {
       }),
     };
 
-    const leadId = 'mock-id-123';
-    const result = (await refineEmailWithAi(leadId, 'make it direct', [mockModel], senderMock)) as any;
+    const result = (await refineEmailWithAi('mock-id-123', 'make it direct', [mockModel])) as any;
 
     expect(result.emailSubject).toBe('Refined Subject');
     expect(result.emailBody).toBe('<p>Refined Body</p>');

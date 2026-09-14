@@ -132,7 +132,7 @@ test.describe.serial('LinkedIn lead workflow', () => {
     });
 
     await page.goto('/');
-    await expect(page.getByRole('heading', { name: 'LinkedIn Lead Intelligence Engine' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'LeadForge' })).toBeVisible();
     await expect(page.getByText('Total Leads')).toBeVisible();
     await expect(page.locator('main').getByRole('link', { name: 'Process New Lead' })).toBeVisible();
     await expect(page.locator('main').getByRole('link', { name: 'View My Leads' })).toBeVisible();

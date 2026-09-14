@@ -1714,8 +1714,8 @@ export default function OutreachEmailsPage() {
     <div className="w-full max-w-none px-4 sm:px-8 py-8 space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <PageHeader
-          title="Generated Outreach Emails Dashboard"
-          description="Review, edit, and approve AI-generated outreach drafts for each candidate and company."
+          title="Drafts"
+          description="Review, edit and approve AI-written emails for each lead and company."
         />
       </div>
 

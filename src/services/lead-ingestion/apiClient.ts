@@ -137,6 +137,7 @@ export interface CampaignItemRecord {
   errorMessage?: string | null;
   sentAt?: string | null;
   openedAt?: string | null;
+  failedAt?: string | null;
 }
 
 export interface CampaignRecord {

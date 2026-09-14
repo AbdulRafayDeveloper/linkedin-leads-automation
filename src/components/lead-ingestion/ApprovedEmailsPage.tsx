@@ -232,8 +232,8 @@ export default function ApprovedEmailsPage() {
     <div className="w-full max-w-none px-4 sm:px-8 py-8 space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <PageHeader
-          title="Approved Unsent Emails Pool"
-          description="Filter and select verified approved outreach emails to bundle into active cold email campaigns."
+          title="Ready to Send"
+          description="Approved emails that haven't been sent yet. Select them to start a campaign."
         />
         <Link href="/lead-ingestion/campaigns">
           <Button variant="outline" className="flex items-center gap-2 border-indigo-200 text-indigo-700 hover:bg-indigo-50 text-xs font-bold">

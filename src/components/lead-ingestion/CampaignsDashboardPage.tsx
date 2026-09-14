@@ -90,8 +90,8 @@ export default function CampaignsDashboardPage() {
     <div className="w-full max-w-none px-4 sm:px-8 py-8 space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <PageHeader
-          title="Cold Email Campaigns & Analytics"
-          description="Manage active campaigns, monitor real-time delivery and open statistics, and re-run unsent or failed email batches."
+          title="Campaigns"
+          description="Track delivery and opens, and resend failed emails."
         />
         <Button
           type="button"

@@ -214,7 +214,7 @@ export default function CampaignDetailPage({ params }: CampaignDetailPageProps) 
           </Link>
           <PageHeader
             title={campaign.name}
-            description={`Campaign Runner & Live Delivery Analytics • ID: #${campaign._id.slice(-6)}`}
+            description={`Campaign #${campaign._id.slice(-6)}`}
           />
         </div>
         <StatusBadge status={campaign.status} />
