@@ -1,11 +1,18 @@
 import { connectToMongoDB } from '@/lib/db/connection';
 import { LeadIngestion, type LeadIngestionDocument } from '@/lib/db/models/LeadIngestion';
-import { PromptSetting } from '@/lib/db/models/PromptSetting';
 import { getFallbackChatModels } from '@/lib/ai/provider';
+import { PROMPT_KEYS } from '@/services/prompts/definitions';
+import { getPromptText } from '@/services/prompts/promptStore';
+import { htmlToPlainText } from './emailHtml';
 import mongoose from 'mongoose';
 
 export interface EmailGeneratorModel {
   invoke: (prompt: string) => Promise<{ content: unknown } | string>;
+}
+
+export interface EmailDraft {
+  subject: string;
+  body: string;
 }
 
 function firstNameOf(fullName: string): string {
@@ -96,6 +103,99 @@ Writing rules (follow exactly):
   return prompt;
 }
 
+/** Tries each model in turn and returns the first valid {"subject", "body"} answer. */
+async function requestEmailJson(models: EmailGeneratorModel[], prompt: string): Promise<EmailDraft | null> {
+  for (const model of models) {
+    try {
+      const rawText = extractContent(await model.invoke(prompt));
+      const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) continue;
+
+      const parsed = JSON.parse(jsonMatch[0]) as Partial<EmailDraft>;
+      if (typeof parsed.subject === 'string' && typeof parsed.body === 'string' && parsed.subject.trim() && parsed.body.trim()) {
+        return { subject: parsed.subject, body: parsed.body };
+      }
+    } catch {
+      // try next model
+    }
+  }
+  return null;
+}
+
+/**
+ * Step 2 prompt: the user's format rules (AI Settings → Email format check
+ * prompt) wrapped with the fixed parts: the draft, "fix the format only" and
+ * the JSON answer shape.
+ */
+export function buildFormatCheckPrompt(draft: EmailDraft, formatRules: string): string {
+  return `You check the format of a cold email before it is saved. You fix formatting only; you never rewrite it.
+
+Format rules (apply strictly):
+"""
+${formatRules.trim()}
+"""
+
+Email to check:
+Subject: ${draft.subject}
+HTML body:
+"""
+${draft.body}
+"""
+
+If the email already follows the format rules, return it exactly as it is. If it doesn't, change only its structure, spacing and HTML tags so it does. Keep every word, name, number, link and phone number exactly as written.
+
+Respond ONLY with strict JSON in this exact shape:
+{"subject": "...", "body": "..."}`;
+}
+
+function wordsOf(text: string): string[] {
+  return htmlToPlainText(text).toLowerCase().match(/[a-z0-9]+/g) ?? [];
+}
+
+/**
+ * True when `formatted` keeps the draft's wording: at least 85% of its words
+ * survive and not many are added. Guards against the format check rewriting,
+ * cutting or padding the email.
+ */
+export function keepsWording(draft: EmailDraft, formatted: EmailDraft): boolean {
+  const original = [...wordsOf(draft.subject), ...wordsOf(draft.body)];
+  const next = [...wordsOf(formatted.subject), ...wordsOf(formatted.body)];
+  if (original.length === 0) return true;
+
+  const available = new Map<string, number>();
+  for (const word of next) available.set(word, (available.get(word) ?? 0) + 1);
+  let kept = 0;
+  for (const word of original) {
+    const count = available.get(word) ?? 0;
+    if (count > 0) {
+      kept++;
+      available.set(word, count - 1);
+    }
+  }
+  return kept / original.length >= 0.85 && next.length <= original.length * 1.25 + 10;
+}
+
+/**
+ * Step 2: a second AI call checks the draft against the format rules and fixes
+ * only the format. Returns the draft unchanged when the rules are empty (the
+ * step is off), every model fails, or the answer changes the wording.
+ */
+export async function checkEmailFormat(
+  draft: EmailDraft,
+  formatRules: string,
+  models: EmailGeneratorModel[]
+): Promise<EmailDraft> {
+  if (!formatRules.trim()) return draft;
+
+  const formatted = await requestEmailJson(models, buildFormatCheckPrompt(draft, formatRules));
+  if (!formatted) return draft;
+  if (!keepsWording(draft, formatted)) {
+    console.warn('Email format check changed the wording; keeping the original draft.');
+    return draft;
+  }
+  return formatted;
+}
+
 export async function generateLeadEmail(
   leadId: string,
   options: {
@@ -117,12 +217,25 @@ export async function generateLeadEmail(
     throw new Error('Lead ingestion record not found');
   }
 
-  // Retrieve persistent global custom prompt setting
-  const promptSetting = await PromptSetting.findOne({ key: 'global_outreach_prompt' });
-  const globalPromptText = promptSetting?.promptText || '';
+  // The two prompts from AI Settings: step 1 writes, step 2 checks the format.
+  const [globalPromptText, formatRules] = await Promise.all([
+    getPromptText(PROMPT_KEYS.emailWriting),
+    getPromptText(PROMPT_KEYS.emailFormat),
+  ]);
 
   const firstName = firstNameOf(doc.fullName || 'there');
   const candidateModels = models ?? (await getFallbackChatModels()) as unknown as EmailGeneratorModel[];
+
+  /** Writes one email (step 1), checks its format (step 2), then applies the fixed guards. */
+  const writeEmail = async (prompt: string): Promise<EmailDraft | null> => {
+    const draft = await requestEmailJson(candidateModels, prompt);
+    if (!draft) return null;
+
+    const checked = await checkEmailFormat(draft, formatRules, candidateModels);
+    let subject = stripDashes(htmlToPlainText(checked.subject).replace(/\s+/g, ' '));
+    if (subject.length > 350) subject = subject.slice(0, 350);
+    return { subject, body: ensureStartsWithFirstNameHtml(checked.body, firstName) };
+  };
 
   const companies = doc.currentCompanies ?? [];
   const isTargetingSpecificCompany = typeof companyIndex === 'number' && companyIndex >= 0;
@@ -148,33 +261,14 @@ export async function generateLeadEmail(
       const roleDetails = comp.summary || (comp as unknown as { roleSummary?: string }).roleSummary || '';
       const compSummary = `${doc.summary || ''}${roleDetails ? ` | Role details: ${roleDetails}` : ''} | Target Company: ${compName} (${compJob})`;
       const prompt = buildOutreachPrompt(firstName, compSummary, comp.websiteUrl, userPrompt, globalPromptText);
+      const email = await writeEmail(prompt);
 
-      for (const model of candidateModels) {
-        try {
-          const response = await model.invoke(prompt);
-          const rawText = extractContent(response);
-          const jsonMatch = rawText.match(/\{[\s\S]*\}/);
-          if (!jsonMatch) continue;
-
-          const parsed = JSON.parse(jsonMatch[0]) as { subject: string; body: string };
-          if (!parsed.subject || !parsed.body) continue;
-
-          let subject = stripDashes(parsed.subject);
-          if (subject.length > 350) subject = subject.slice(0, 350);
-
-          const cleanBody = ensureStartsWithFirstNameHtml(parsed.body, firstName);
-
-          const targetComp = doc.currentCompanies[i];
-          if (targetComp) {
-            targetComp.emailSubject = subject;
-            targetComp.emailBody = cleanBody;
-            targetComp.approved = false;
-            doc.markModified('currentCompanies');
-          }
-          break;
-        } catch {
-          // try next model
-        }
+      const targetComp = doc.currentCompanies[i];
+      if (email && targetComp) {
+        targetComp.emailSubject = email.subject;
+        targetComp.emailBody = email.body;
+        targetComp.approved = false;
+        doc.markModified('currentCompanies');
       }
     }
   }
@@ -195,28 +289,13 @@ export async function generateLeadEmail(
         userPrompt,
         globalPromptText
       );
+      const email = await writeEmail(prompt);
 
-      for (const model of candidateModels) {
-        try {
-          const response = await model.invoke(prompt);
-          const rawText = extractContent(response);
-          const jsonMatch = rawText.match(/\{[\s\S]*\}/);
-          if (!jsonMatch) continue;
-
-          const parsed = JSON.parse(jsonMatch[0]) as { subject: string; body: string };
-          if (!parsed.subject || !parsed.body) continue;
-
-          let subject = stripDashes(parsed.subject);
-          if (subject.length > 350) subject = subject.slice(0, 350);
-
-          doc.emailSubject = subject;
-          doc.emailBody = ensureStartsWithFirstNameHtml(parsed.body, firstName);
-          doc.emailStatus = 'pending';
-          doc.approved = false;
-          break;
-        } catch {
-          // try next model
-        }
+      if (email) {
+        doc.emailSubject = email.subject;
+        doc.emailBody = email.body;
+        doc.emailStatus = 'pending';
+        doc.approved = false;
       }
     }
   }

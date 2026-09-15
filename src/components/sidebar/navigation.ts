@@ -86,7 +86,7 @@ export const NAV_SECTIONS: NavSection[] = [
 export const SETTINGS_ITEM: NavItem = {
   href: '/lead-ingestion/prompt',
   label: 'AI Settings',
-  description: 'Outreach prompt',
+  description: 'Email prompts',
   icon: SlidersIcon,
 };
 

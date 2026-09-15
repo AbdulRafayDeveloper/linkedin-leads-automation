@@ -2,136 +2,122 @@
 
 import { useEffect, useState } from 'react';
 import { PageHeader } from '@/components/ui/PageHeader';
-import { Card, CardContent, CardHeader } from '@/components/ui/Card';
-import Button from '@/components/ui/Button';
-import {
-  LoaderIcon,
-  CheckCircleIcon,
-  SparklesIcon,
-  AlertTriangleIcon,
-} from '@/components/ui/Icons';
+import { Badge } from '@/components/ui/Badge';
+import { AlertTriangleIcon, ArrowRightIcon, CheckCircleIcon, LoaderIcon } from '@/components/ui/Icons';
+import { getPromptsApi, savePromptApi, type PromptRecord } from '@/services/lead-ingestion/apiClient';
+import PromptEditorModal from './PromptEditorModal';
+
+function PromptStatus({ prompt }: { prompt: PromptRecord }) {
+  if (!prompt.promptText.trim()) return <Badge tone="warning">Off</Badge>;
+  if (prompt.isDefault) return <Badge tone="neutral">Default</Badge>;
+  return <Badge tone="success">Custom</Badge>;
+}
+
+function PromptCard({ prompt, onOpen }: { prompt: PromptRecord; onOpen: () => void }) {
+  const saved = prompt.updatedAt
+    ? ` · Saved ${new Date(prompt.updatedAt).toLocaleDateString(undefined, { dateStyle: 'medium' })}`
+    : '';
+
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className="group flex h-full flex-col rounded-lg border border-slate-200 bg-white p-5 text-left shadow-sm transition-all duration-150 hover:border-indigo-300 hover:shadow-md focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="text-xs font-semibold tracking-wide text-indigo-600 uppercase">{prompt.stage}</span>
+        <PromptStatus prompt={prompt} />
+      </div>
+      <h2 className="mt-2 text-base font-semibold text-slate-900">{prompt.title}</h2>
+      <p className="mt-1 text-sm leading-relaxed text-slate-500">{prompt.description}</p>
+
+      <pre className="mt-4 line-clamp-5 rounded-md bg-slate-50 p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap text-slate-600 ring-1 ring-slate-100">
+        {prompt.promptText.trim() || prompt.emptyBehavior}
+      </pre>
+
+      <div className="mt-auto flex items-center justify-between gap-3 pt-4 text-xs text-slate-500">
+        <span>
+          {prompt.promptText.length.toLocaleString()} characters{saved}
+        </span>
+        <span className="inline-flex items-center gap-1 font-medium text-indigo-600 group-hover:underline">
+          Open editor
+          <ArrowRightIcon width={14} height={14} />
+        </span>
+      </div>
+    </button>
+  );
+}
 
 export default function PromptSettingsPage() {
-  const [promptText, setPromptText] = useState('');
-
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  const [prompts, setPrompts] = useState<PromptRecord[] | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [openKey, setOpenKey] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   useEffect(() => {
-    async function fetchPromptSetting() {
-      setLoading(true);
-      setError(null);
-      try {
-        const res = await fetch('/api/settings/prompt');
-        if (!res.ok) throw new Error('Failed to load global prompt settings');
-        const data = (await res.json()) as { setting?: { promptText?: string } };
-
-        if (data.setting) {
-          setPromptText(data.setting.promptText ?? '');
-        }
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Error loading settings');
-      } finally {
-        setLoading(false);
-      }
-    }
-
-    void fetchPromptSetting();
+    getPromptsApi()
+      .then(({ prompts: list }) => setPrompts(list))
+      .catch((err: unknown) => setLoadError(err instanceof Error ? err.message : 'Failed to load prompts'));
   }, []);
 
-  const handleSaveSettings = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setSaving(true);
-    setError(null);
-    setSuccessMsg(null);
+  useEffect(() => {
+    if (!notice) return;
+    const timer = setTimeout(() => setNotice(null), 5000);
+    return () => clearTimeout(timer);
+  }, [notice]);
 
-    try {
-      const res = await fetch('/api/settings/prompt', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ promptText }),
-      });
+  const openPrompt = prompts?.find((prompt) => prompt.key === openKey) ?? null;
 
-      if (!res.ok) throw new Error('Failed to update prompt settings');
-      setSuccessMsg('Global AI prompt saved. Every email generated from now on will use it.');
-      setTimeout(() => setSuccessMsg(null), 5000);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save settings');
-    } finally {
-      setSaving(false);
-    }
+  const handleSave = async (promptText: string) => {
+    if (!openPrompt) return;
+    const { prompt } = await savePromptApi(openPrompt.key, promptText);
+    setPrompts((prev) => prev?.map((item) => (item.key === prompt.key ? prompt : item)) ?? null);
+    setOpenKey(null);
+    setNotice(`${prompt.title} saved. New and regenerated emails use it from now on.`);
   };
 
   return (
-    <div className="w-full max-w-none px-4 sm:px-8 py-8 space-y-6">
+    <div className="w-full max-w-none space-y-6 px-4 py-8 sm:px-8">
       <PageHeader
         title="AI Settings"
-        description="The prompt used to write every generated email."
+        description="Every email goes through these prompts in order: the first writes it, the second checks its format. Click a prompt to edit it."
       />
 
-      {error && (
+      {notice && (
+        <div
+          role="status"
+          className="flex items-start gap-2.5 rounded-md border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700"
+        >
+          <CheckCircleIcon width={16} height={16} className="mt-0.5 shrink-0 text-green-600" />
+          <div className="flex-1 font-medium">{notice}</div>
+        </div>
+      )}
+
+      {loadError ? (
         <div className="flex items-start gap-2.5 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-          <AlertTriangleIcon width={16} height={16} className="shrink-0 mt-0.5 text-red-600" />
-          <div className="flex-1 font-semibold">{error}</div>
+          <AlertTriangleIcon width={16} height={16} className="mt-0.5 shrink-0 text-red-600" />
+          <div className="flex-1 font-medium">{loadError}</div>
         </div>
-      )}
-
-      {successMsg && (
-        <div className="flex items-start gap-2.5 rounded-md border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">
-          <CheckCircleIcon width={16} height={16} className="shrink-0 mt-0.5 text-green-600" />
-          <div className="flex-1 font-semibold">{successMsg}</div>
-        </div>
-      )}
-
-      {loading ? (
-        <div className="flex flex-col items-center justify-center py-16 gap-3">
-          <LoaderIcon width={28} height={28} className="text-indigo-600 animate-spin" />
-          <span className="text-sm font-semibold text-slate-500">Loading AI prompt...</span>
+      ) : !prompts ? (
+        <div className="flex flex-col items-center justify-center gap-3 py-16">
+          <LoaderIcon width={28} height={28} className="animate-spin text-indigo-600" />
+          <span className="text-sm font-medium text-slate-500">Loading prompts...</span>
         </div>
       ) : (
-        <form onSubmit={(e) => { void handleSaveSettings(e); }} className="space-y-6">
-          <Card className="border border-indigo-100 bg-gradient-to-br from-indigo-50/20 to-white shadow-sm">
-            <CardHeader
-              title="Custom Global Outreach Instructions"
-              action={<SparklesIcon width={18} height={18} className="text-indigo-600" />}
-            />
-            <CardContent className="pt-2 space-y-4">
-              <p className="text-xs text-slate-600 leading-relaxed">
-                Write who you are, your positioning, value proposition, tone, call to action and how the email
-                should be signed off (name, links, phone). This prompt is the only sender context the AI gets for
-                every lead email.
-              </p>
+        <div className="grid gap-4 md:grid-cols-2">
+          {prompts.map((prompt) => (
+            <PromptCard key={prompt.key} prompt={prompt} onOpen={() => setOpenKey(prompt.key)} />
+          ))}
+        </div>
+      )}
 
-              <textarea
-                rows={24}
-                placeholder="e.g. I am Abdul Rafay, a Senior Full Stack AI Developer. Always highlight my 2-week MVP delivery guarantee, keep the email body under 90 words, invite the lead for a free 15-minute technical audit call, and sign off with my name, portfolio link and WhatsApp number."
-                value={promptText}
-                onChange={(e) => setPromptText(e.target.value)}
-                className="w-full min-h-[60vh] resize-y text-sm font-mono font-medium text-slate-800 border border-slate-300 rounded-md p-4 focus:ring-2 focus:ring-indigo-500 focus:outline-none leading-relaxed bg-white"
-              />
-
-              <div className="flex items-center justify-between gap-3 pt-3 border-t border-slate-100">
-                <span className="text-[11px] font-semibold text-slate-400">
-                  {promptText.length.toLocaleString()} characters
-                </span>
-                <Button
-                  type="submit"
-                  disabled={saving}
-                  className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold px-6 py-2.5 flex items-center gap-2 text-xs shadow-md"
-                >
-                  {saving ? (
-                    <LoaderIcon width={14} height={14} className="animate-spin" />
-                  ) : (
-                    <CheckCircleIcon width={14} height={14} />
-                  )}
-                  Save Prompt
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
-        </form>
+      {openPrompt && (
+        <PromptEditorModal
+          key={openPrompt.key}
+          prompt={openPrompt}
+          onClose={() => setOpenKey(null)}
+          onSave={handleSave}
+        />
       )}
     </div>
   );

@@ -234,3 +234,28 @@ export async function dispatchCampaignBatchApi(id: string, data?: { itemIds?: st
   }));
 }
 
+/** An editable AI prompt (see src/services/prompts/definitions.ts). */
+export interface PromptRecord {
+  key: string;
+  title: string;
+  description: string;
+  stage: string;
+  emptyBehavior: string;
+  promptText: string;
+  defaultText: string;
+  isDefault: boolean;
+  updatedAt: string | null;
+}
+
+export async function getPromptsApi(): Promise<{ prompts: PromptRecord[] }> {
+  return handle(await fetch(`${BASE}/settings/prompts`, { cache: 'no-store' }));
+}
+
+export async function savePromptApi(key: string, promptText: string): Promise<{ prompt: PromptRecord }> {
+  return handle(await fetch(`${BASE}/settings/prompts/${encodeURIComponent(key)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ promptText }),
+  }));
+}
+

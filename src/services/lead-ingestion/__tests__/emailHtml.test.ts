@@ -1,5 +1,21 @@
 /** @jest-environment node */
-import { withParagraphSpacing } from '../emailHtml';
+import { htmlToPlainText, withParagraphSpacing } from '../emailHtml';
+
+describe('htmlToPlainText', () => {
+  it('keeps one blank line between paragraphs and line breaks inside them', () => {
+    const html =
+      '<p>Hi Abdul,</p>\n<p></p>\n<p>Delivering 29+ projects &amp; <strong>SaaS</strong>.</p>\n<p></p>\n' +
+      '<p>Best regards,<br>Abdul Rafay</p>\n<p>Portfolio: https://rafaydev.vercel.app<br>Phone:&nbsp;+92 306</p>';
+    expect(htmlToPlainText(html)).toBe(
+      'Hi Abdul,\n\nDelivering 29+ projects & SaaS.\n\nBest regards,\nAbdul Rafay\n\n' +
+        'Portfolio: https://rafaydev.vercel.app\nPhone: +92 306'
+    );
+  });
+
+  it('treats editor divs as lines', () => {
+    expect(htmlToPlainText('<div>One</div><div>Two</div>')).toBe('One\nTwo');
+  });
+});
 
 describe('withParagraphSpacing', () => {
   it('adds the gap to every plain <p> and keeps all content, including empty spacer paragraphs', () => {

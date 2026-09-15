@@ -14,7 +14,9 @@ import {
 import { PageHeader } from '@/components/ui/PageHeader';
 import { Card, CardContent, CardHeader } from '@/components/ui/Card';
 import Button from '@/components/ui/Button';
+import CopyButton from '@/components/ui/CopyButton';
 import { Badge } from '@/components/ui/Badge';
+import { htmlToPlainText, withParagraphSpacing } from '@/services/lead-ingestion/emailHtml';
 import {
   LoaderIcon,
   SparklesIcon,
@@ -449,13 +451,20 @@ function InlineRichDraftEditor({
       <div className="space-y-2">
         <div className="flex items-center gap-2">
           <span className="text-xs font-bold text-slate-600 shrink-0">Subject:</span>
-          <input
-            type="text"
-            value={subject}
-            onChange={(e) => setSubject(e.target.value)}
-            placeholder="Type outreach email subject line here..."
-            className="flex-1 text-xs font-semibold border border-slate-200 rounded px-2.5 py-1.5 focus:ring-1 focus:ring-indigo-500 focus:outline-none bg-slate-50/50 focus:bg-white"
-          />
+          <div className="relative flex-1">
+            <input
+              type="text"
+              value={subject}
+              onChange={(e) => setSubject(e.target.value)}
+              placeholder="Type outreach email subject line here..."
+              className="w-full text-xs font-semibold border border-slate-200 rounded pl-2.5 pr-10 py-1.5 focus:ring-1 focus:ring-indigo-500 focus:outline-none bg-slate-50/50 focus:bg-white"
+            />
+            <CopyButton
+              label="Copy subject"
+              getContent={() => ({ text: subject.trim() })}
+              className="absolute right-1 top-1/2 h-6 w-6 -translate-y-1/2"
+            />
+          </div>
         </div>
 
         {/* Toolbar & Mode Switcher */}
@@ -522,25 +531,34 @@ function InlineRichDraftEditor({
           </div>
         </div>
 
-        {/* Directly Editable Body Box */}
-        {mode === 'visual' ? (
-          <div
-            ref={editorRef}
-            contentEditable
-            suppressContentEditableWarning
-            onInput={(e) => setBody(e.currentTarget.innerHTML)}
-            onBlur={(e) => setBody(e.currentTarget.innerHTML)}
-            className="w-full text-xs text-slate-800 leading-relaxed min-h-[160px] p-3.5 border border-slate-300 rounded-b-md focus:ring-2 focus:ring-indigo-500 focus:outline-none bg-white email-body max-w-none cursor-text"
+        {/* Directly Editable Body Box. Copy gives the same HTML that is sent
+            (so paragraphs, spacing, bold and links survive a paste into Gmail)
+            plus a plain-text version. */}
+        <div className="relative">
+          {mode === 'visual' ? (
+            <div
+              ref={editorRef}
+              contentEditable
+              suppressContentEditableWarning
+              onInput={(e) => setBody(e.currentTarget.innerHTML)}
+              onBlur={(e) => setBody(e.currentTarget.innerHTML)}
+              className="w-full text-xs text-slate-800 leading-relaxed min-h-[160px] py-3.5 pl-3.5 pr-12 border border-slate-300 rounded-b-md focus:ring-2 focus:ring-indigo-500 focus:outline-none bg-white email-body max-w-none cursor-text"
+            />
+          ) : (
+            <textarea
+              rows={8}
+              value={body}
+              onChange={(e) => setBody(e.target.value)}
+              className="w-full text-xs font-mono border border-slate-300 rounded-b-md py-3 pl-3 pr-12 focus:ring-2 focus:ring-indigo-500 focus:outline-none bg-slate-900 text-slate-100"
+              placeholder="<p>Hi Firstname,</p>..."
+            />
+          )}
+          <CopyButton
+            label="Copy email"
+            getContent={() => ({ text: htmlToPlainText(body), html: withParagraphSpacing(body) })}
+            className="absolute right-2 top-2"
           />
-        ) : (
-          <textarea
-            rows={8}
-            value={body}
-            onChange={(e) => setBody(e.target.value)}
-            className="w-full text-xs font-mono border border-slate-300 rounded-b-md p-3 focus:ring-2 focus:ring-indigo-500 focus:outline-none bg-slate-900 text-slate-100"
-            placeholder="<p>Hi Firstname,</p>..."
-          />
-        )}
+        </div>
       </div>
 
       {/* AI Refine Assistant */}

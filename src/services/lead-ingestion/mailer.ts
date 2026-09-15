@@ -1,4 +1,5 @@
 import nodemailer from 'nodemailer';
+import { htmlToPlainText } from './emailHtml';
 
 export interface SendEmailResult {
   success: boolean;
@@ -40,12 +41,7 @@ export async function sendOutboundEmail({
       },
     });
 
-    const plainText = (htmlBody || '')
-      .replace(/<br\s*\/?>/gi, '\n')
-      .replace(/<\/p>/gi, '\n\n')
-      .replace(/<[^>]+>/g, '')
-      .replace(/\n\s*\n/g, '\n\n')
-      .trim();
+    const plainText = htmlToPlainText(htmlBody || '');
 
     const senderName = process.env.SMTP_FROM_NAME || process.env.SENDER_NAME || 'Abdul Rafay';
     const formattedFrom = `"${senderName}" <${user}>`;

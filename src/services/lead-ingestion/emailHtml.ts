@@ -14,3 +14,30 @@ export function withParagraphSpacing(html: string): string {
     /\sstyle\s*=/i.test(attrs) ? tag : `<p${attrs} style="${PARAGRAPH_STYLE}">`
   );
 }
+
+const ENTITIES: Record<string, string> = {
+  '&nbsp;': ' ',
+  '&amp;': '&',
+  '&lt;': '<',
+  '&gt;': '>',
+  '&quot;': '"',
+  '&apos;': "'",
+  '&#39;': "'",
+};
+
+/**
+ * The plain-text version of an email body: one blank line between paragraphs,
+ * <br> as a line break, tags removed and common entities decoded. Used for the
+ * text part of sent emails and for "Copy" in the app.
+ */
+export function htmlToPlainText(html: string): string {
+  return html
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(p|h[1-6]|blockquote)>/gi, '\n\n')
+    .replace(/<\/(div|li)>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&(nbsp|amp|lt|gt|quot|apos|#39);/gi, (entity) => ENTITIES[entity.toLowerCase()] ?? entity)
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}

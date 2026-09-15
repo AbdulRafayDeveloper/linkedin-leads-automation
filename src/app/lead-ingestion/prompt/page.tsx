@@ -4,7 +4,7 @@ import { pageMetadata } from '@/lib/seo/metadata';
 export const metadata = pageMetadata({
   title: 'AI Settings',
   description:
-    'Set the outreach prompt the AI uses to write every personalized email: who you are, your pitch, tone and sign-off.',
+    'Edit the prompts every email goes through: the writing prompt (who you are, your pitch, tone and sign-off) and the format check prompt.',
   path: '/lead-ingestion/prompt',
 });
 
