@@ -79,14 +79,15 @@ Models: `Client`, `LeadIngestion`, `Campaign`, `PromptSetting`. Code lives in `s
 **Campaign sending:** `POST /api/campaigns/[id]/dispatch-batch` sends **exactly one** pending item per call (or failed ones too with `rerunFailed`). It updates the item status, recomputes the campaign counters and mirrors the status back onto the lead or company box. The **random delay between sends lives in the browser**: `runCampaignLoop` in `app/lead-ingestion/campaigns/[id]/page.tsx` counts down between `minDelaySeconds` and `maxDelaySeconds`. Closing the tab stops the campaign; there is no server-side scheduler. Open tracking is a 1×1 GIF at `GET /api/lead-ingestion/[id]/track?campaignId=&itemId=`, added only when `ENABLE_OPEN_TRACKING=true`. Each campaign item records `sentAt` on delivery, `openedAt` on open and `failedAt` on failure. The dashboard buckets activity by these timestamps.
 
 **Dashboard** (`/dashboard`, `src/components/dashboard/`, `GET /api/dashboard`, `src/services/dashboard/`):
-- **How the date range works:** the browser resolves the preset (Today / 7 days / 30 days / All time / Custom, kept in the URL as `?range=…&from=…&to=…`) into ISO instants in its own time zone. It sends them with `tz`, and the server buckets the chart in that zone (`timeBuckets.ts`).
+- **The browser owns the calendar.** It resolves the preset (Today / 7 days / 30 days / All time / Custom, kept in the URL as `?range=…&from=…&to=…`) into ISO instants in its own zone (`dateRange.ts` → `resolveRange`) and sends them with `tz` plus an explicit `compareFrom`/`compareTo`, so "vs yesterday" means yesterday to the same clock time. The server never builds a day boundary itself.
+- **Bad input is refused, not guessed at.** `resolveRange` returns `{kind:'invalid', message}` for a missing, backwards or future custom range and the page shows the message instead of quietly loading all-time numbers. The route answers 422 for a non-ISO date, `to` without `from`, a start after the end, an unknown IANA zone, half a comparison window, or a range over `MAX_RANGE_DAYS`.
 - **What each number is filtered by:**
   - Lead metrics (KPIs, funnel, verification, drafts, research, recent leads) cover **leads imported in the range** (`LeadIngestion.createdAt`).
-  - Sending metrics cover **emails sent, opened or failed in the range**.
-  - The queue size and the campaign list/status counts are current state, not filtered.
-- **Deltas** compare against the previous period of the same length; all time has none.
-- **Funnel:** each step is counted independently. Every lead gets a personal draft, even one with no email, so the steps are not cumulative.
-- **Code layout:** `summarizeLeads` / `summarizeCampaigns` / `buildSeries` in `dashboardStats.ts` are pure and unit-tested. The DB work is one `$project` aggregation per range that turns subjects and bodies into booleans, plus one light campaign query.
+  - Sending metrics cover **emails sent, opened or failed in the range**; an item with no `sentAt`/`failedAt` can only be placed in the all-time totals.
+  - The queue size and the campaign list/status counts are current state. The Campaigns panel says "any date" in its description so that is visible on screen.
+- **Units are explicit** because one screen mixes them: KPIs and the verification panel count **distinct email addresses** (deduplicated across leads, each at its strongest status, so the panel total always equals the "Emails found" KPI), the funnel counts **leads**, Drafts counts **draft boxes** (`written = approved + awaitingReview`).
+- **Funnel:** each step is counted independently, and the panel says so. A draft can exist for a lead with no email, so the steps are not cumulative.
+- **Everything is aggregated in MongoDB** (`leadPipeline` / `campaignPipeline` with `$facet`): documents never leave the database, so the route is flat as the workspace grows. Buckets are `hour → day → week → month` picked from the span (`pickGranularity`), with `mongoBucketKey` producing the same keys the app builds in `createBucketKey`. Repeated requests for one range hit a 15-second in-memory cache.
 
 ### 2. Legacy: Lead processing / enrichment
 
@@ -109,7 +110,8 @@ Model: `Lead` (collection `leads`). Code lives in `src/lib/{processLead.ts,parse
 
 ## AI provider layer (`src/lib/ai/provider.ts`)
 
-- `getFallbackChatModels(temperature)` is what nearly everything uses. It returns a chain: Groq primary (`getGroqModelName()`, default `openai/gpt-oss-120b`) → Groq `openai/gpt-oss-20b` → OpenAI (only if `OPENAI_API_KEY` is set). This chain is **always Groq-first no matter what `AI_PROVIDER` says**.
+- `getFallbackChatModels(temperature)` is what nearly everything uses. It returns a chain: Groq primary (`getGroqModelName()`, default `openai/gpt-oss-120b`) **on every configured Groq key**, then Groq `openai/gpt-oss-20b` on every key, then OpenAI (only if `OPENAI_API_KEY` is set). This chain is **always Groq-first no matter what `AI_PROVIDER` says**.
+- **Groq key pool (`src/lib/ai/groqKeys.ts`)**: Groq's free tier limits tokens per minute and per day *per key*, so the app holds several. Keys come from `GROQ_API_KEY`, `GROQ_API_KEY_1…N` (sorted by number, gaps fine) and an optional comma/newline list in `GROQ_API_KEYS`, deduped in that order. `keysToTry()` starts at the key that last worked and wraps around; `provider.ts` wraps each model in a Proxy that reports to `noteKeySuccess` / `noteKeyFailure`. A failing key is parked — for exactly the wait Groq names in a 429 ("try again in 45m41.04s"), 30 minutes on 401/403, 15 seconds on anything else — and skipped until then, unless every key is parked, in which case all are tried anyway. Adding another key is an env change only; nothing in the code counts them. The cursor and cooldowns are per process, so each serverless instance learns on its own.
 - `getChatModel()` respects `AI_PROVIDER` (`groq` | `openai` | `ollama`). Only legacy `processLead` uses it.
 - `getGroqModelName()` swaps retired model IDs (e.g. `llama-3.3-70b-versatile`) for the default.
 - Pattern for every LLM call: loop over models → `invoke(prompt)` → pull text out (string, or an array of content parts) → regex out the `{...}` JSON → `JSON.parse` → on any failure try the next model → finally fall back to a deterministic regex/heuristic path, or throw. Prompts ask for strict JSON only.
@@ -162,7 +164,7 @@ Order of checks: syntax → local disposable-domain list → free disposable-che
 | Var | Used by |
 |---|---|
 | `MONGODB_URI` (required), `MONGODB_DATABASE`, `MONGODB_TIMEOUT_MS` | `lib/db/connection.ts`. **Production and local both use the `leads` database** (checked against the deployed site on 2026-10-14: 55 leads, 7 campaigns). The `dbName` option overrides the database in the URI path, so keep the two in sync — a mismatch is why the app once showed a different set of leads locally than live. `leads-automation` on the same cluster is an older copy and is not used; it still holds 31 leads from 2026-09-01/02 that were never in production. |
-| `GROQ_API_KEY`, `GROQ_MODEL` | AI (primary) |
+| `GROQ_API_KEY_1` … `GROQ_API_KEY_N` (or a single `GROQ_API_KEY`, or a list in `GROQ_API_KEYS`), `GROQ_MODEL` | AI (primary). Every key is tried in turn; see the Groq key pool above. |
 | `OPENAI_API_KEY`, `OPENAI_MODEL` (default `gpt-4o-mini`) | AI fallback / `AI_PROVIDER=openai` |
 | `AI_PROVIDER` (`groq`\|`openai`\|`ollama`), `OLLAMA_BASE_URL`, `OLLAMA_MODEL` | `getChatModel()` only |
 | `SMTP_HOST` (default smtp.gmail.com), `SMTP_PORT` (587), `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM_NAME` | `services/lead-ingestion/mailer.ts` |

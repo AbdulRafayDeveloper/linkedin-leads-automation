@@ -22,7 +22,7 @@ npm run dev
 Create a `.env.local` file before the first run. At minimum it needs:
 
 - `MONGODB_URI`
-- `GROQ_API_KEY`
+- `GROQ_API_KEY_1`, `GROQ_API_KEY_2`, … (one Groq key is enough to start; extra keys are used automatically when one hits its rate limit)
 - the `SMTP_*` settings, which are needed only to send emails
 
 [CLAUDE.md](CLAUDE.md) lists every environment variable.
