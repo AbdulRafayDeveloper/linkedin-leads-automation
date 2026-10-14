@@ -11,11 +11,13 @@ import {
   AlertTriangleIcon,
   ArrowLeftIcon,
   CheckCircleIcon,
+  InboxIcon,
   LoaderIcon,
   MailIcon,
   SparklesIcon,
   XCircleIcon,
 } from '@/components/ui/Icons';
+import DummyDataModal from './DummyDataModal';
 import { cn } from '@/lib/utils/cn';
 import { MAX_PROFILE_CHARS, checkIngestionInput } from '@/lib/validation/ingestionInput';
 import {
@@ -100,6 +102,7 @@ export default function LeadIngestionPage() {
   const [inputError, setInputError] = useState<string | null>(null);
   const [preview, setPreview] = useState<IngestionPreview | null>(null);
   const [duplicate, setDuplicate] = useState<DuplicateLead | null>(null);
+  const [dummyOpen, setDummyOpen] = useState(false);
 
   const busy = phase === 'extracting' || phase === 'saving';
   const trimmed = rawText.trim();
@@ -235,13 +238,19 @@ export default function LeadIngestionPage() {
           title="New Lead"
           description="Paste a LinkedIn or Sales Navigator profile. You'll see what was found before anything is saved."
         />
-        <Link
-          href="/lead-ingestion/emails"
-          className={buttonClasses('outline', 'md', 'shrink-0 border-indigo-200 text-indigo-700 hover:bg-indigo-50')}
-        >
-          <MailIcon width={15} height={15} />
-          View drafts
-        </Link>
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
+          <Button type="button" variant="outline" onClick={() => setDummyOpen(true)}>
+            <InboxIcon width={15} height={15} />
+            Dummy data
+          </Button>
+          <Link
+            href="/lead-ingestion/emails"
+            className={buttonClasses('outline', 'md', 'border-indigo-200 text-indigo-700 hover:bg-indigo-50')}
+          >
+            <MailIcon width={15} height={15} />
+            View drafts
+          </Link>
+        </div>
       </div>
 
       {error && (
@@ -446,6 +455,19 @@ export default function LeadIngestionPage() {
           </Card>
         </div>
       ) : null}
+
+      <DummyDataModal
+        open={dummyOpen}
+        onClose={() => setDummyOpen(false)}
+        onUse={(content) => {
+          updateText(content);
+          setPreview(null);
+          setDuplicate(null);
+          setPhase('idle');
+          setDummyOpen(false);
+          textareaRef.current?.focus();
+        }}
+      />
     </div>
   );
 }

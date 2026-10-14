@@ -6,6 +6,23 @@ import type { IngestionPreview } from '@/services/lead-ingestion/intakeApi';
 const push = jest.fn();
 jest.mock('next/navigation', () => ({ useRouter: () => ({ push }) }));
 
+jest.mock('@/services/sample-profiles/sampleProfilesApi', () => ({
+  listSamplesApi: () =>
+    Promise.resolve([
+      {
+        id: 's1',
+        title: 'Mark Allen — DevOps Engineer',
+        content: `Mark Allen
+DevOps Engineer at Helix
+Garden Bay, Canada`,
+        updatedAt: '2026-10-14T10:00:00.000Z',
+      },
+    ]),
+  createSampleApi: jest.fn(),
+  updateSampleApi: jest.fn(),
+  deleteSampleApi: jest.fn(),
+}));
+
 const previewLeadApi = jest.fn();
 const confirmLeadApi = jest.fn();
 jest.mock('@/services/lead-ingestion/intakeApi', () => {
@@ -201,6 +218,21 @@ describe('New Lead page', () => {
     await userEvent.type(textarea(), PROFILE);
     await userEvent.keyboard('{Control>}{Enter}{/Control}');
     await waitFor(() => expect(previewLeadApi).toHaveBeenCalled());
+  });
+
+  it('fills the box from the dummy data dialog', async () => {
+    render(<LeadIngestionPage />);
+
+    await userEvent.click(screen.getByRole('button', { name: /dummy data/i }));
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText('Mark Allen — DevOps Engineer')).toBeInTheDocument();
+
+    await userEvent.click(within(dialog).getByRole('button', { name: /use this/i }));
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(textarea()).toHaveValue(`Mark Allen
+DevOps Engineer at Helix
+Garden Bay, Canada`);
   });
 
   it('links to drafts without nesting a button inside a link', () => {

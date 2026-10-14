@@ -5,7 +5,7 @@ import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react';
 import { cn } from '@/lib/utils/cn';
 import { XIcon } from './Icons';
 
-export type ModalSize = 'md' | 'lg' | 'full';
+export type ModalSize = 'md' | 'lg' | 'full' | 'screen';
 
 export interface ModalProps {
   open: boolean;
@@ -26,6 +26,8 @@ const SIZE_CLASSES: Record<ModalSize, string> = {
   md: 'max-w-xl',
   lg: 'max-w-3xl',
   full: 'max-w-5xl',
+  // Nearly the whole window, with a margin all round.
+  screen: 'max-w-none sm:h-[calc(100dvh-2rem)] sm:max-h-none',
 };
 
 const FOCUSABLE_SELECTOR = [
@@ -163,8 +165,8 @@ export default function Modal({
         tabIndex={-1}
         onKeyDown={trapTab}
         className={cn(
-          'relative flex h-[100dvh] w-full min-w-0 flex-col overflow-hidden bg-white shadow-2xl',
-          'sm:h-auto sm:max-h-[90vh] sm:rounded-xl',
+          'relative flex h-[100dvh] w-full min-w-0 flex-col overflow-hidden bg-white shadow-2xl sm:rounded-xl',
+          size === 'screen' ? '' : 'sm:h-auto sm:max-h-[90vh]',
           SIZE_CLASSES[size]
         )}
       >
