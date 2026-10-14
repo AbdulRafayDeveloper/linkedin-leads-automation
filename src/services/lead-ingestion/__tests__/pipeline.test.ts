@@ -249,6 +249,26 @@ describe('runIngestionPipeline', () => {
     expect(saved!.status).toBe('completed');
   });
 
+  it('never regenerates over the drafts of an older lead', async () => {
+    const { LeadIngestion } = await import('@/lib/db/models/LeadIngestion');
+    const lead = await makeLead();
+    await LeadIngestion.collection.updateOne(
+      { _id: lead._id },
+      {
+        $unset: { pipelineStage: '', pipelineStartedAt: '' },
+        $set: { status: 'completed', crawlStatus: 'not_started', emailSubject: 'Hand-edited subject' },
+      }
+    );
+
+    const result = await runIngestionPipelineFresh(lead._id.toString());
+
+    expect(result).toEqual({ ran: false, stage: 'done' });
+    expect(generateLeadEmail).not.toHaveBeenCalled();
+    const saved = await LeadIngestion.findById(lead._id);
+    expect(saved!.emailSubject).toBe('Hand-edited subject');
+    expect(saved!.pipelineStage).toBe('done');
+  });
+
   it('rejects an invalid lead id', async () => {
     const { runIngestionPipeline } = await import('../pipeline');
     expect(await runIngestionPipeline('not-an-id')).toMatchObject({ ran: false, stage: 'failed' });

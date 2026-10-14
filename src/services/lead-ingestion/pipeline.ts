@@ -260,6 +260,21 @@ export async function runIngestionPipeline(leadId: string): Promise<PipelineRunR
   }
   await connectToMongoDB();
 
+  const existing = await LeadIngestion.findById(leadId)
+    .select('pipelineStage emailSubject currentCompanies.emailSubject')
+    .lean<{ pipelineStage?: PipelineStage; emailSubject?: string | null; currentCompanies?: { emailSubject?: string | null }[] } | null>();
+
+  // A lead from before these fields existed, that already has drafts, is
+  // finished work: mark it done rather than regenerating over the drafts.
+  if (existing && !existing.pipelineStage) {
+    const hasDraft =
+      !!existing.emailSubject || (existing.currentCompanies ?? []).some((c) => !!c.emailSubject);
+    if (hasDraft) {
+      await LeadIngestion.updateOne({ _id: leadId }, { $set: { pipelineStage: 'done' } });
+      return { ran: false, stage: 'done' };
+    }
+  }
+
   const claimed = await claimPipeline(leadId);
   if (!claimed) {
     const current = await LeadIngestion.findById(leadId)

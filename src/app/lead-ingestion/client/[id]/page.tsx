@@ -757,12 +757,16 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
           setLead(fetchedLead);
           setCustomPersonalWebInput(fetchedLead.portfolioUrl || '');
 
-          // Leads saved before the pipeline fields existed have no stage; fall
-          // back to the old markers so they can still be picked up and finished.
+          // Leads saved before the pipeline fields existed have no stage. Pick
+          // those up only when they have no drafts yet: re-running the pipeline
+          // regenerates drafts, which must never overwrite ones already written.
           const stage = (fetchedLead as LeadWithPipeline).pipelineStage;
+          const hasDraft =
+            !!fetchedLead.emailSubject ||
+            (fetchedLead.currentCompanies ?? []).some((company) => !!company.emailSubject);
           const unfinished = stage
             ? stage !== 'done'
-            : fetchedLead.status !== 'completed' || fetchedLead.crawlStatus !== 'completed';
+            : !hasDraft && (fetchedLead.status !== 'completed' || fetchedLead.crawlStatus !== 'completed');
           if (unfinished) {
             void watchPipeline(fetchedLead._id);
           }
