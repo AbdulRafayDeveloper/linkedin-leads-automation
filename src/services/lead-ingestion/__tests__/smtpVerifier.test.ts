@@ -1,6 +1,5 @@
 import { verifyEmailSmtp } from '../smtpVerifier';
 import dns from 'node:dns';
-import net from 'node:net';
 
 jest.mock('node:dns', () => {
   const original = jest.requireActual('node:dns');
@@ -13,7 +12,7 @@ jest.mock('node:dns', () => {
 jest.mock('node:net', () => {
   return {
     Socket: jest.fn().mockImplementation(() => {
-      let onCallbacks: Record<string, Function> = {};
+      const onCallbacks: Record<string, (...args: unknown[]) => void> = {};
       const socket = {
         setTimeout: jest.fn(),
         connect: jest.fn().mockImplementation((port, host, cb) => {

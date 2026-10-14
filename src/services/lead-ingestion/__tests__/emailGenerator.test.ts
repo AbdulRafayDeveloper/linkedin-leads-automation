@@ -22,7 +22,7 @@ jest.mock('@/lib/db/models/LeadIngestion', () => {
     emailSubject: null as string | null,
     emailBody: null as string | null,
     markModified: jest.fn(),
-    save: jest.fn().mockImplementation(function (this: any) {
+    save: jest.fn().mockImplementation(function (this: unknown) {
       return Promise.resolve(this);
     }),
   };
@@ -33,6 +33,13 @@ jest.mock('@/lib/db/models/LeadIngestion', () => {
     },
   };
 });
+
+/** The fields these tests read back off the saved lead. */
+interface DraftFields {
+  emailSubject: string | null;
+  emailBody: string | null;
+  currentCompanies?: { emailSubject: string | null; emailBody: string | null }[];
+}
 
 const savedPrompts: Record<string, string> = {};
 
@@ -91,7 +98,7 @@ describe('emailGenerator', () => {
     const fixed = { subject: 'Outreach to Jane', body: '<p>Hi Jane,</p><p>I noticed your MERN skills.</p>' };
     const invoke = answers(draft, fixed);
 
-    const result = (await generateLeadEmail('mock-id-123', { models: [{ invoke }], forceRegenerate: true })) as any;
+    const result = (await generateLeadEmail('mock-id-123', { models: [{ invoke }], forceRegenerate: true })) as unknown as DraftFields;
 
     expect(invoke).toHaveBeenCalledTimes(2);
     expect(invoke.mock.calls[0][0]).toContain('I am Abdul Rafay. Sign off with my portfolio link.');
@@ -108,7 +115,7 @@ describe('emailGenerator', () => {
     };
     const invoke = answers(draft, { subject: 'Hello', body: '<p>Hi Jane,</p><p>Totally different text.</p>' });
 
-    const result = (await generateLeadEmail('mock-id-123', { models: [{ invoke }], forceRegenerate: true })) as any;
+    const result = (await generateLeadEmail('mock-id-123', { models: [{ invoke }], forceRegenerate: true })) as unknown as DraftFields;
 
     expect(result.emailBody).toBe(draft.body);
   });
@@ -143,7 +150,7 @@ describe('emailGenerator', () => {
       }),
     };
 
-    const result = (await refineEmailWithAi('mock-id-123', 'make it direct', [mockModel])) as any;
+    const result = (await refineEmailWithAi('mock-id-123', 'make it direct', [mockModel])) as unknown as DraftFields;
 
     expect(result.emailSubject).toBe('Refined Subject');
     expect(result.emailBody).toBe('<p>Refined Body</p>');

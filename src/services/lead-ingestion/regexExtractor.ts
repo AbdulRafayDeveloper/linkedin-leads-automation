@@ -132,10 +132,6 @@ export function extractAllUrls(rawText: string): string[] {
   return Array.from(found);
 }
 
-function extractWebsite(text: string): string | null {
-  const urls = extractAllUrls(text);
-  return urls[0] ?? null;
-}
 
 function extractCompanyAndTitle(lines: string[], text: string): { companyName: string | null; jobTitle: string | null } {
   const atMatch = text.match(/(?:current\s*:?\s*)?([A-Za-z0-9\s,&-]+?)\s+at\s+([A-Za-z0-9\s,&.-]+?)(?:\r|\n|Present|\.|$)/i);

@@ -59,9 +59,18 @@ describe('getFallbackChatModels', () => {
     process.env = { ...ORIGINAL_ENV };
   });
 
-  it('always returns Groq first and OpenAI second, regardless of AI_PROVIDER', async () => {
+  it('tries Groq twice, then OpenAI, regardless of AI_PROVIDER', async () => {
     process.env.AI_PROVIDER = 'openai';
+    process.env.OPENAI_API_KEY = 'test-key';
+    const models = (await getFallbackChatModels()) as unknown as Array<{ provider: string; opts: { model: string } }>;
+    expect(models.map((m) => m.provider)).toEqual(['groq', 'groq', 'openai']);
+    // The second Groq entry is the lighter, faster model.
+    expect(models[1].opts.model).toBe('openai/gpt-oss-20b');
+  });
+
+  it('leaves OpenAI out of the chain when there is no API key', async () => {
+    delete process.env.OPENAI_API_KEY;
     const models = (await getFallbackChatModels()) as unknown as Array<{ provider: string }>;
-    expect(models.map((m) => m.provider)).toEqual(['groq', 'openai']);
+    expect(models.map((m) => m.provider)).toEqual(['groq', 'groq']);
   });
 });

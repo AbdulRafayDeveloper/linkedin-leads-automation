@@ -4,6 +4,7 @@ import { getFallbackChatModels } from '@/lib/ai/provider';
 import { PROMPT_KEYS } from '@/services/prompts/definitions';
 import { getPromptText } from '@/services/prompts/promptStore';
 import { htmlToPlainText } from './emailHtml';
+import { sanitizeEmailHtml } from '@/lib/utils/sanitizeHtml';
 import mongoose from 'mongoose';
 
 export interface EmailGeneratorModel {
@@ -234,7 +235,7 @@ export async function generateLeadEmail(
     const checked = await checkEmailFormat(draft, formatRules, candidateModels);
     let subject = stripDashes(htmlToPlainText(checked.subject).replace(/\s+/g, ' '));
     if (subject.length > 350) subject = subject.slice(0, 350);
-    return { subject, body: ensureStartsWithFirstNameHtml(checked.body, firstName) };
+    return { subject, body: sanitizeEmailHtml(ensureStartsWithFirstNameHtml(checked.body, firstName)) };
   };
 
   const companies = doc.currentCompanies ?? [];
@@ -360,37 +361,28 @@ Respond ONLY with strict JSON in this exact shape:
 {"subject": "...", "body": "..."}`;
 
   const candidateModels = models ?? (await getFallbackChatModels()) as unknown as EmailGeneratorModel[];
-  const errors: string[] = [];
+  const refined = await requestEmailJson(candidateModels, prompt);
 
-  for (const model of candidateModels) {
-    try {
-      const response = await model.invoke(prompt);
-      const rawText = extractContent(response);
-      const jsonMatch = rawText.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) throw new Error('Model did not return JSON');
-
-      const parsed = JSON.parse(jsonMatch[0]) as {
-        subject: string;
-        body: string;
-      };
-
-      if (!parsed.subject || !parsed.body) {
-        throw new Error('Incomplete subject or body');
-      }
-
-      if (isTargetingCompany && targetComp) {
-        targetComp.emailSubject = stripDashes(parsed.subject);
-        targetComp.emailBody = parsed.body;
-        doc.markModified('currentCompanies');
-      } else {
-        doc.emailSubject = stripDashes(parsed.subject);
-        doc.emailBody = parsed.body;
-      }
-      return await doc.save();
-    } catch (error) {
-      errors.push(error instanceof Error ? error.message : 'unknown error');
-    }
+  if (!refined) {
+    throw new Error('AI email refinement failed on all providers');
   }
 
-  throw new Error(`AI email refinement failed on all providers: ${errors.join('; ')}`);
+  // A refined draft goes through the same format check as a generated one, so
+  // refining can't undo the structure and spacing rules from AI Settings.
+  const formatRules = await getPromptText(PROMPT_KEYS.emailFormat);
+  const checked = await checkEmailFormat(refined, formatRules, candidateModels);
+
+  const subject = stripDashes(htmlToPlainText(checked.subject).replace(/\s+/g, ' ')).slice(0, 350);
+  // The greeting is not forced here: a refinement may deliberately change it.
+  const body = sanitizeEmailHtml(checked.body);
+
+  if (isTargetingCompany && targetComp) {
+    targetComp.emailSubject = subject;
+    targetComp.emailBody = body;
+    doc.markModified('currentCompanies');
+  } else {
+    doc.emailSubject = subject;
+    doc.emailBody = body;
+  }
+  return await doc.save();
 }

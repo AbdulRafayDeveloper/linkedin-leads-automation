@@ -1,10 +1,26 @@
 import type { NextConfig } from "next";
 
+// Sent on every page and API response. The app shows lead data and has no
+// login, so it must never be framed by another site and must not sit in a
+// shared cache.
+const SECURITY_HEADERS = [
+  { key: "X-Frame-Options", value: "DENY" },
+  { key: "Content-Security-Policy", value: "frame-ancestors 'none'" },
+  { key: "X-Content-Type-Options", value: "nosniff" },
+  { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+  { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=(), interest-cohort=()" },
+  { key: "Cross-Origin-Opener-Policy", value: "same-origin" },
+];
+
 // Logo files in public/ (see src/lib/brand/assets.ts). Their names carry no
 // content hash, so they are cached for a day and revalidated in the background.
 const BRAND_ASSET_CACHE = "public, max-age=86400, stale-while-revalidate=604800";
 
 const nextConfig: NextConfig = {
+  // Lets a second build (QA, a parallel session) use its own output folder
+  // instead of fighting over .next. Unset in normal use.
+  distDir: process.env.NEXT_DIST_DIR || ".next",
+
   // Hide the dev-only Next.js badge: it's framework branding and every corner
   // covers app UI (sidebar settings link, header button, footer). Compile and
   // runtime errors are still shown.
@@ -12,6 +28,16 @@ const nextConfig: NextConfig = {
 
   async headers() {
     return [
+      {
+        // Everything except Next's immutable build output.
+        source: "/((?!_next/static|_next/image).*)",
+        headers: SECURITY_HEADERS,
+      },
+      {
+        // Pages and API responses carry private lead data.
+        source: "/((?!_next/static|_next/image|icons|.*\.(?:png|svg|ico|webmanifest|xml|txt)).*)",
+        headers: [{ key: "Cache-Control", value: "no-store, must-revalidate" }],
+      },
       {
         source:
           "/:file(favicon\\.ico|favicon\\.svg|favicon\\.png|favicon-\\d+x\\d+\\.png|apple-touch-icon\\.png|apple-touch-icon-\\d+x\\d+\\.png|safari-pinned-tab\\.svg)",

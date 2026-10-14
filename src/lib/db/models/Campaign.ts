@@ -15,6 +15,10 @@ export interface CampaignItem {
   bodyHtml: string;
   status: CampaignItemStatus;
   errorMessage?: string | null;
+  /** Number of send attempts, successful or not. */
+  attempts?: number;
+  /** Set when the item is claimed for sending; cleared once the send finishes. */
+  sendingStartedAt?: Date | null;
   sentAt?: Date | null;
   openedAt?: Date | null;
   failedAt?: Date | null;
@@ -24,6 +28,7 @@ export interface CampaignDocument extends Document {
   name: string;
   status: CampaignStatus;
   totalEmails: number;
+  /** Emails actually delivered (delivered + opened). Failures are not counted. */
   sentCount: number;
   deliveredCount: number;
   failedCount: number;
@@ -31,6 +36,12 @@ export interface CampaignDocument extends Document {
   minDelaySeconds: number;
   maxDelaySeconds: number;
   items: CampaignItem[];
+  /** When the last send attempt started. */
+  lastDispatchAt?: Date | null;
+  /** Browser tab that currently drives the campaign; null when nothing is running. */
+  activeRunnerId?: string | null;
+  /** Last time the active runner called the API. Used to detect a closed tab. */
+  runnerHeartbeatAt?: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -51,6 +62,8 @@ const CampaignItemSchema = new Schema<CampaignItem>(
       default: 'pending',
     },
     errorMessage: { type: String, default: null },
+    attempts: { type: Number, default: 0 },
+    sendingStartedAt: { type: Date, default: null },
     sentAt: { type: Date, default: null },
     openedAt: { type: Date, default: null },
     failedAt: { type: Date, default: null },
@@ -75,9 +88,15 @@ const CampaignSchema = new Schema<CampaignDocument>(
     minDelaySeconds: { type: Number, default: 60 },
     maxDelaySeconds: { type: Number, default: 600 },
     items: { type: [CampaignItemSchema], default: [] },
+    lastDispatchAt: { type: Date, default: null },
+    activeRunnerId: { type: String, default: null },
+    runnerHeartbeatAt: { type: Date, default: null },
   },
   { timestamps: true }
 );
+
+CampaignSchema.index({ createdAt: -1 });
+CampaignSchema.index({ name: 1 });
 
 export const Campaign: Model<CampaignDocument> =
   (mongoose.models.Campaign as Model<CampaignDocument>) ||

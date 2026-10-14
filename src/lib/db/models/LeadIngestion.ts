@@ -4,6 +4,16 @@ export type IngestionStatus = 'processing' | 'completed' | 'failed';
 export type EmailValidationStatus = 'pending' | 'valid' | 'invalid' | 'risky' | 'unknown';
 export type CrawlStatus = 'not_started' | 'in_progress' | 'completed' | 'failed';
 export type SiteType = 'company_website' | 'personal_portfolio' | 'unknown';
+/** Where the automatic pipeline has got to. Set by the server-side runner. */
+export type PipelineStage =
+  | 'extracted'
+  | 'mapping'
+  | 'crawling'
+  | 'verifying'
+  | 'generating'
+  | 'done'
+  | 'failed';
+export type ExtractionSource = 'ai' | 'regex_fallback';
 
 export interface VerifiedEmailItem {
   email: string;
@@ -27,6 +37,14 @@ export interface CurrentCompanyItem {
 export interface LeadIngestionDocument extends Document {
   clientId: Types.ObjectId;
   rawText: string;
+  /** SHA-256 of the trimmed pasted text, used to spot a profile pasted twice. */
+  rawTextHash: string | null;
+  /** 'regex_fallback' means every AI model failed and the data is thin. */
+  extractionSource: ExtractionSource;
+  pipelineStage: PipelineStage;
+  /** Set while a server run owns this lead; a stale value means the run died. */
+  pipelineStartedAt: Date | null;
+  pipelineError: string | null;
   summary: string | null;
   fullName: string | null;
   companyName: string | null;
@@ -60,6 +78,16 @@ const LeadIngestionSchema = new Schema<LeadIngestionDocument>(
   {
     clientId: { type: Schema.Types.ObjectId, ref: 'Client', required: true, index: true },
     rawText: { type: String, required: true },
+    rawTextHash: { type: String, default: null, index: true },
+    extractionSource: { type: String, enum: ['ai', 'regex_fallback'], default: 'ai' },
+    pipelineStage: {
+      type: String,
+      enum: ['extracted', 'mapping', 'crawling', 'verifying', 'generating', 'done', 'failed'],
+      default: 'extracted',
+      index: true,
+    },
+    pipelineStartedAt: { type: Date, default: null },
+    pipelineError: { type: String, default: null },
     summary: { type: String, default: null },
     fullName: { type: String, default: null },
     companyName: { type: String, default: null },
@@ -145,6 +173,8 @@ const LeadIngestionSchema = new Schema<LeadIngestionDocument>(
   { timestamps: true }
 );
 
+// The lead list sorts newest first on every page, with or without a filter.
+LeadIngestionSchema.index({ createdAt: -1 });
 LeadIngestionSchema.index({ fullName: 1, companyName: 1 });
 LeadIngestionSchema.index({ clientId: 1, createdAt: -1 });
 LeadIngestionSchema.index({ approved: 1, emailValidationStatus: 1 });

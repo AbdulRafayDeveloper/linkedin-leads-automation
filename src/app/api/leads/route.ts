@@ -1,232 +1,155 @@
 import { type NextRequest } from 'next/server';
+import mongoose from 'mongoose';
 import { connectToMongoDB } from '@/lib/db/connection';
 import { LeadIngestion } from '@/lib/db/models/LeadIngestion';
 import { Client } from '@/lib/db/models/Client';
+import { Campaign } from '@/lib/db/models/Campaign';
 import { jsonError, jsonOk } from '@/lib/api/response';
+import { LeadQueryError, buildLeadPipeline, parseLeadListQuery } from '@/lib/leads/query';
+
+// This route serves the LeadIngestion model (my-leads, Drafts, Ready to Send),
+// not the legacy Lead model.
+
+interface FacetResult {
+  rows: Record<string, unknown>[];
+  total: { count: number }[];
+}
 
 export async function GET(request: NextRequest) {
+  let query;
   try {
-    const { searchParams } = request.nextUrl;
-    const page = Math.max(1, Number(searchParams.get('page')) || 1);
-    const limit = Math.max(1, Number(searchParams.get('limit')) || 100);
-    const search = searchParams.get('search')?.trim();
-    const clientId = searchParams.get('clientId');
-    const approved = searchParams.get('approved');
-    const emailStatus = searchParams.get('emailStatus');
-    const startDate = searchParams.get('startDate');
-    const endDate = searchParams.get('endDate');
-    const dateRange = searchParams.get('dateRange'); // 'today' | '7days' | '30days' | 'custom' | 'all'
+    query = parseLeadListQuery(request.nextUrl.searchParams);
+  } catch (error) {
+    if (error instanceof LeadQueryError) return jsonError(error.message, 400);
+    throw error;
+  }
 
+  try {
     await connectToMongoDB();
 
-    const andConditions: Record<string, unknown>[] = [];
+    const [result] = (await LeadIngestion.aggregate(
+      buildLeadPipeline(query)
+    )) as unknown as FacetResult[];
 
-    if (clientId && clientId !== 'all') {
-      andConditions.push({ clientId });
-    }
+    const rows = result?.rows ?? [];
+    const total = result?.total?.[0]?.count ?? 0;
 
-    if (approved === 'true') {
-      andConditions.push({
-        $or: [
-          { approved: true },
-          { 'currentCompanies.approved': true },
-        ],
-      });
-    } else if (approved === 'false') {
-      andConditions.push({
-        $or: [
-          { approved: false },
-          { approved: { $exists: false } },
-          { 'currentCompanies.approved': false },
-          { 'currentCompanies.approved': { $exists: false } },
-        ],
-      });
-    }
-
-    if (emailStatus && emailStatus !== 'all') {
-      if (emailStatus === 'valid' || emailStatus === 'verified_smtp') {
-        andConditions.push({
-          $or: [
-            { emailValidationStatus: 'valid' },
-            { emailValidationStatus: 'risky' },
-            { 'verifiedEmails.status': 'valid' },
-            { 'verifiedEmails.status': 'risky' },
-          ],
-        });
-      } else if (emailStatus === 'unapproved_verified_smtp') {
-        andConditions.push({
-          $and: [
-            { approved: { $ne: true } },
-            { 'currentCompanies.approved': { $ne: true } },
-            {
-              $or: [
-                { emailValidationStatus: 'valid' },
-                { emailValidationStatus: 'risky' },
-                { 'verifiedEmails.status': 'valid' },
-                { 'verifiedEmails.status': 'risky' },
-              ],
-            },
-          ],
-        });
-      } else if (emailStatus === 'missing_or_unverified') {
-        andConditions.push({
-          $or: [
-            { email: null },
-            { email: '' },
-            { email: { $exists: false } },
-            { emailValidationStatus: { $nin: ['valid', 'risky'] } },
-            { 'currentCompanies.companyEmails': null },
-            { 'currentCompanies.companyEmails': [] },
-          ],
-        });
-      } else if (emailStatus === 'no_contact_email') {
-        andConditions.push({
-          $or: [
-            { email: null },
-            { email: '' },
-            { email: { $exists: false } },
-            { emailStatus: 'no_contact_email' },
-          ],
-        });
-      } else if (emailStatus === 'pending') {
-        andConditions.push({
-          $or: [
-            { emailStatus: 'pending' },
-            { emailStatus: 'draft' },
-            { emailStatus: { $exists: false } },
-            { emailStatus: null },
-          ],
-        });
-      } else {
-        andConditions.push({ emailStatus });
-      }
-    }
-
-    // Date Range Filtering
-    if (dateRange && dateRange !== 'all') {
-      const now = new Date();
-      if (dateRange === 'today') {
-        const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-        andConditions.push({ createdAt: { $gte: startOfToday } });
-      } else if (dateRange === '7days') {
-        const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-        andConditions.push({ createdAt: { $gte: sevenDaysAgo } });
-      } else if (dateRange === '30days') {
-        const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-        andConditions.push({ createdAt: { $gte: thirtyDaysAgo } });
-      } else if (dateRange === 'custom') {
-        const dateFilter: Record<string, Date> = {};
-        if (startDate) {
-          const s = new Date(startDate);
-          if (!isNaN(s.getTime())) {
-            s.setHours(0, 0, 0, 0);
-            dateFilter['$gte'] = s;
-          }
-        }
-        if (endDate) {
-          const e = new Date(endDate);
-          if (!isNaN(e.getTime())) {
-            e.setHours(23, 59, 59, 999);
-            dateFilter['$lte'] = e;
-          }
-        }
-        if (Object.keys(dateFilter).length > 0) {
-          andConditions.push({ createdAt: dateFilter });
-        }
-      }
-    } else if (startDate || endDate) {
-      const dateFilter: Record<string, Date> = {};
-      if (startDate) {
-        const s = new Date(startDate);
-        if (!isNaN(s.getTime())) {
-          s.setHours(0, 0, 0, 0);
-          dateFilter['$gte'] = s;
-        }
-      }
-      if (endDate) {
-        const e = new Date(endDate);
-        if (!isNaN(e.getTime())) {
-          e.setHours(23, 59, 59, 999);
-          dateFilter['$lte'] = e;
-        }
-      }
-      if (Object.keys(dateFilter).length > 0) {
-        andConditions.push({ createdAt: dateFilter });
-      }
-    }
-
-    // Fast multi-field Regex search
-    if (search) {
-      const regex = new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
-      andConditions.push({
-        $or: [
-          { fullName: regex },
-          { email: regex },
-          { companyName: regex },
-          { discoveredEmails: regex },
-          { portfolioUrl: regex },
-          { websiteUrl: regex },
-          { rawText: regex },
-          { additionalUrls: regex },
-          { 'currentCompanies.companyName': regex },
-          { 'currentCompanies.companyEmails': regex },
-        ],
-      });
-    }
-
-    const query = andConditions.length > 0 ? { $and: andConditions } : {};
-    const skip = (page - 1) * limit;
-
-    const [rawLeads, total, allClients] = await Promise.all([
-      LeadIngestion.find(query).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
-      LeadIngestion.countDocuments(query),
-      Client.find({}).select('_id name').lean(),
-    ]);
-
+    const allClients = await Client.find({}).select('_id name').lean();
     const clientMap = new Map(allClients.map((c) => [c._id.toString(), c.name]));
 
-    const leads = rawLeads.map((l) => ({
-      ...l,
-      _id: l._id.toString(),
-      clientId: l.clientId?.toString(),
-      clientName: clientMap.get(l.clientId?.toString() || '') || 'Client Profile',
-    }));
-
-    const clientsList = allClients.map((c) => ({ id: c._id.toString(), name: c.name }));
+    const leads = rows.map((lead) => {
+      const clientId = (lead.clientId as mongoose.Types.ObjectId | undefined)?.toString();
+      return {
+        ...lead,
+        _id: (lead._id as mongoose.Types.ObjectId).toString(),
+        clientId,
+        clientName: clientMap.get(clientId ?? '') ?? null,
+      };
+    });
 
     return jsonOk({
       leads,
       total,
-      page,
-      limit,
-      pages: Math.max(1, Math.ceil(total / limit)),
-      hasMore: skip + rawLeads.length < total,
-      clients: clientsList,
+      page: query.page,
+      limit: query.limit,
+      pages: Math.max(1, Math.ceil(total / query.limit)),
+      hasMore: query.page * query.limit < total,
+      clients: allClients.map((c) => ({ id: c._id.toString(), name: c.name })),
     });
   } catch (error) {
-    return jsonError(error instanceof Error ? error.message : 'Failed to fetch leads', 500);
+    // The raw driver message can name hosts and internals, so it stays in the logs.
+    console.error('GET /api/leads failed:', error);
+    return jsonError('Failed to fetch leads', 500);
   }
 }
 
-export async function DELETE(request: NextRequest) {
+async function readIdsFromBody(request: NextRequest): Promise<string[] | null> {
   try {
-    const { searchParams } = request.nextUrl;
-    const singleId = searchParams.get('id');
+    const body = (await request.json()) as { ids?: unknown };
+    return Array.isArray(body?.ids) ? body.ids.filter((id): id is string => typeof id === 'string') : null;
+  } catch {
+    return null;
+  }
+}
 
+/**
+ * Deletes leads and everything that pointed at them: campaign items (with the
+ * campaign counters recomputed) and clients left without a single lead.
+ */
+export async function DELETE(request: NextRequest) {
+  const singleId = request.nextUrl.searchParams.get('id');
+  const requested = singleId ? [singleId] : await readIdsFromBody(request);
+
+  if (!requested || requested.length === 0) {
+    return jsonError('No lead IDs provided for delete', 422);
+  }
+  if (requested.some((id) => !mongoose.Types.ObjectId.isValid(id))) {
+    return jsonError('One or more lead ids are not valid', 422);
+  }
+
+  const ids = Array.from(new Set(requested));
+
+  try {
     await connectToMongoDB();
 
-    if (singleId) {
-      const result = await LeadIngestion.deleteOne({ _id: singleId });
-      return jsonOk({ deletedCount: result.deletedCount });
+    const leads = await LeadIngestion.find({ _id: { $in: ids } })
+      .select('_id clientId')
+      .lean();
+
+    if (leads.length === 0) {
+      return jsonError('No matching leads found to delete', 404);
     }
 
-    const body = (await request.json()) as { ids?: string[] };
-    if (!body?.ids?.length) {
-      return jsonError('No lead IDs provided for delete', 422);
+    const leadIds = leads.map((lead) => lead._id);
+    const leadIdStrings = new Set(leadIds.map((id) => id.toString()));
+    const { deletedCount } = await LeadIngestion.deleteMany({ _id: { $in: leadIds } });
+
+    // Campaign items for a deleted lead would fail to send, so they go too.
+    let removedCampaignItems = 0;
+    const campaigns = await Campaign.find({ 'items.leadId': { $in: leadIds } });
+    for (const campaign of campaigns) {
+      const before = campaign.items.length;
+      campaign.items = campaign.items.filter(
+        (item) => !leadIdStrings.has(item.leadId?.toString() ?? '')
+      );
+      removedCampaignItems += before - campaign.items.length;
+
+      campaign.totalEmails = campaign.items.length;
+      campaign.sentCount = campaign.items.filter(
+        (i) => i.status !== 'pending' && i.status !== 'sending'
+      ).length;
+      campaign.deliveredCount = campaign.items.filter(
+        (i) => i.status === 'delivered' || i.status === 'opened'
+      ).length;
+      campaign.failedCount = campaign.items.filter((i) => i.status === 'failed').length;
+      campaign.openedCount = campaign.items.filter((i) => i.status === 'opened').length;
+      const stillQueued = campaign.items.filter(
+        (i) => i.status === 'pending' || i.status === 'sending'
+      ).length;
+      if (campaign.status === 'running' && stillQueued === 0) {
+        campaign.status = 'completed';
+      }
+
+      campaign.markModified('items');
+      await campaign.save();
     }
-    const result = await LeadIngestion.deleteMany({ _id: { $in: body.ids } });
-    return jsonOk({ deletedCount: result.deletedCount });
+
+    // A client exists only to group its leads; drop the ones left empty.
+    let removedClients = 0;
+    const clientIds = Array.from(
+      new Set(leads.map((lead) => lead.clientId?.toString()).filter(Boolean) as string[])
+    );
+    for (const clientId of clientIds) {
+      const remaining = await LeadIngestion.countDocuments({ clientId });
+      if (remaining === 0) {
+        const result = await Client.deleteOne({ _id: clientId });
+        removedClients += result.deletedCount ?? 0;
+      }
+    }
+
+    return jsonOk({ deletedCount, removedCampaignItems, removedClients });
   } catch (error) {
-    return jsonError(error instanceof Error ? error.message : 'Failed to delete leads', 500);
+    console.error('DELETE /api/leads failed:', error);
+    return jsonError('Failed to delete leads', 500);
   }
 }

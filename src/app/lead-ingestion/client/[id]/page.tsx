@@ -5,12 +5,12 @@ import Link from 'next/link';
 import {
   crawlLeadWebsiteApi,
   generateLeadEmailApi,
-  refineLeadEmailApi,
   updateLeadDetailsApi,
   type LeadIngestionRecord,
   type VerifiedEmailItem,
   type CurrentCompanyItem,
 } from '@/services/lead-ingestion/apiClient';
+import { resumeLeadPipelineApi } from '@/services/lead-ingestion/intakeApi';
 import { PageHeader } from '@/components/ui/PageHeader';
 import { Card, CardContent, CardHeader } from '@/components/ui/Card';
 import Button from '@/components/ui/Button';
@@ -47,6 +47,14 @@ interface PipelineState {
   finalLead: LeadIngestionRecord | null;
 }
 
+/** The lead record plus the pipeline fields this page watches. */
+type LeadWithPipeline = LeadIngestionRecord & {
+  pipelineStage?: 'extracted' | 'mapping' | 'crawling' | 'verifying' | 'generating' | 'done' | 'failed';
+  pipelineStartedAt?: string | null;
+  pipelineError?: string | null;
+  extractionSource?: 'ai' | 'regex_fallback';
+};
+
 interface ToastMessage {
   id: string;
   type: 'success' | 'error' | 'info';
@@ -58,32 +66,6 @@ interface ToastMessage {
 const EMAIL_REGEX = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
 function isValidEmail(email: string): boolean {
   return EMAIL_REGEX.test(email.trim().toLowerCase());
-}
-
-async function readStream(
-  body: ReadableStream<Uint8Array>,
-  onEvent: (event: string, data: unknown) => void
-) {
-  const reader = body.getReader();
-  const decoder = new TextDecoder();
-  let buf = '';
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buf += decoder.decode(value, { stream: true });
-    const chunks = buf.split('\n\n');
-    buf = chunks.pop() ?? '';
-
-    for (const chunk of chunks) {
-      const eventMatch = chunk.match(/^event:\s*(.+)/m);
-      const dataMatch = chunk.match(/^data:\s*([\s\S]+)/m);
-      if (!eventMatch || !dataMatch) continue;
-      try {
-        onEvent(eventMatch[1].trim(), JSON.parse(dataMatch[1].trim()));
-      } catch { /* ignore */ }
-    }
-  }
 }
 
 // ── Helper: Robust Email Categorization & Remapping ────────────────────────────
@@ -336,7 +318,7 @@ function InlineRichDraftEditor({
 }: {
   initialSubject: string;
   initialBody: string;
-  smtpStatus: string | null;
+  smtpStatus: VerifiedEmailItem['status'] | null;
   hasEmail: boolean;
   isSaving: boolean;
   isRegenerating: boolean;
@@ -356,13 +338,21 @@ function InlineRichDraftEditor({
   const [body, setBody] = useState(initialBody || '');
   const [mode, setMode] = useState<'visual' | 'code'>('visual');
   const editorRef = useRef<HTMLDivElement>(null);
+  // Re-sync when the draft is replaced from outside (regenerate, AI refine).
+  // React's "adjust state during render" pattern: no effect, no extra paint.
+  const [lastSubjectProp, setLastSubjectProp] = useState(initialSubject || '');
+  const [lastBodyProp, setLastBodyProp] = useState(initialBody || '');
 
-  useEffect(() => {
+  if (lastSubjectProp !== (initialSubject || '')) {
+    setLastSubjectProp(initialSubject || '');
     setSubject(initialSubject || '');
-  }, [initialSubject]);
+  }
+  if (lastBodyProp !== (initialBody || '')) {
+    setLastBodyProp(initialBody || '');
+    setBody(initialBody || '');
+  }
 
   useEffect(() => {
-    setBody(initialBody || '');
     if (editorRef.current && document.activeElement !== editorRef.current) {
       editorRef.current.innerHTML = initialBody || '';
     }
@@ -394,7 +384,7 @@ function InlineRichDraftEditor({
             <SparklesIcon width={13} height={13} className={`text-${themeColor}-500`} />
             {title}
           </span>
-          {!hasEmail ? <Badge tone="warning">⚠️ No Email Found</Badge> : <SmtpBadge status={(smtpStatus as any) ?? 'pending'} />}
+          {!hasEmail ? <Badge tone="warning">⚠️ No Email Found</Badge> : <SmtpBadge status={smtpStatus ?? 'pending'} />}
         </div>
 
         <div className="flex items-center gap-1.5 flex-wrap">
@@ -592,7 +582,7 @@ interface ClientPageProps {
 export default function ClientProfilePage({ params }: ClientPageProps) {
   const { id } = use(params);
 
-  const [lead, setLead] = useState<LeadIngestionRecord | null>(null);
+  const [lead, setLead] = useState<LeadWithPipeline | null>(null);
   const [pipeline, setPipeline] = useState<PipelineState | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -627,9 +617,6 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
   const [remapLoadingMap, setRemapLoadingMap] = useState<Record<string, boolean>>({});
 
   // ── Inline draft editing (per box index; -1 = personal) ────────────────────
-  const [inlineEditingIndex, setInlineEditingIndex] = useState<number | null>(null);
-  const [inlineSubject, setInlineSubject] = useState('');
-  const [inlineBody, setInlineBody] = useState('');
   const [savingDraftIndex, setSavingDraftIndex] = useState<number | null>(null);
   const [regeneratingCompIndex, setRegeneratingCompIndex] = useState<number | null>(null);
   const [boxAiPrompts, setBoxAiPrompts] = useState<Record<number, string>>({});
@@ -647,18 +634,111 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
   const [editingEmailLoading, setEditingEmailLoading] = useState(false);
   const [deletingEmailKey, setDeletingEmailKey] = useState<string | null>(null);
 
-  async function callPhase(
-    phase: 'extract' | 'map' | 'crawl' | 'verify' | 'generate',
-    body: Record<string, unknown>
-  ) {
-    const res = await fetch('/api/lead-ingestion/stream', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ phase, ...body }),
+  // The enrichment pipeline runs on the server (started when the lead is
+  // created, resumable afterwards). This page only watches it, so closing the
+  // tab no longer leaves a lead half-processed.
+  const watchRef = useRef({ stop: false });
+
+  const stageToPhase = (stage?: string | null): 1 | 2 | 3 | 4 | 5 | 'done' => {
+    switch (stage) {
+      case 'mapping':
+        return 2;
+      case 'crawling':
+        return 3;
+      case 'verifying':
+        return 4;
+      case 'generating':
+        return 5;
+      case 'extracted':
+        return 1;
+      default:
+        return 'done';
+    }
+  };
+
+  const fetchLeadRecord = async (targetLeadId: string): Promise<LeadWithPipeline | null> => {
+    const res = await fetch(`/api/lead-ingestion/${targetLeadId}`, { cache: 'no-store' });
+    if (!res.ok) throw new Error('Failed to load candidate record');
+    const data = (await res.json()) as { lead?: LeadWithPipeline; result?: LeadWithPipeline };
+    return data.lead ?? data.result ?? null;
+  };
+
+  /**
+   * Follows the server-side pipeline for this lead: asks it to resume if no run
+   * is alive, then polls the record until it is done or failed.
+   */
+  const watchPipeline = async (targetLeadId: string, { resume = true }: { resume?: boolean } = {}) => {
+    watchRef.current.stop = false;
+    setPipeline({
+      leadId: targetLeadId,
+      clientId: null,
+      clientName: null,
+      phase: 2,
+      running: true,
+      error: null,
+      mappedCompanies: null,
+      portfolioUrl: null,
+      crawledEmails: [],
+      crawledPhones: [],
+      verifiedEmails: [],
+      finalLead: null,
     });
-    if (!res.ok || !res.body) throw new Error(`Stream error ${res.status}`);
-    return res.body;
-  }
+
+    if (resume) {
+      try {
+        await resumeLeadPipelineApi(targetLeadId);
+      } catch {
+        // Not fatal: polling below still reports what the server is doing.
+      }
+    }
+
+    let lastStage: string | null = null;
+    let unchangedPolls = 0;
+
+    while (!watchRef.current.stop) {
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+      if (watchRef.current.stop) return;
+
+      let fresh: LeadWithPipeline | null = null;
+      try {
+        fresh = await fetchLeadRecord(targetLeadId);
+      } catch {
+        continue; // a dropped request should not end the watch
+      }
+      if (!fresh) continue;
+
+      setLead(fresh);
+      const stage = fresh.pipelineStage ?? 'done';
+
+      if (stage === 'done') {
+        setPipeline((prev) => (prev ? { ...prev, running: false, phase: 'done', finalLead: fresh } : prev));
+        showToast('Processing finished.', 'success');
+        return;
+      }
+      if (stage === 'failed') {
+        const message = fresh.pipelineError || 'Processing failed';
+        setPipeline((prev) => (prev ? { ...prev, running: false, error: message } : prev));
+        showToast(message, 'error');
+        return;
+      }
+
+      setPipeline((prev) => (prev ? { ...prev, phase: stageToPhase(stage), running: true } : prev));
+
+      // Nothing moved for ~1 minute and no run owns the lead: ask again.
+      unchangedPolls = stage === lastStage ? unchangedPolls + 1 : 0;
+      lastStage = stage;
+      const startedAt = fresh.pipelineStartedAt ? new Date(fresh.pipelineStartedAt).getTime() : 0;
+      const looksStalled = !startedAt || Date.now() - startedAt > 3 * 60 * 1000;
+      if (unchangedPolls >= 20 && looksStalled) {
+        unchangedPolls = 0;
+        try {
+          await resumeLeadPipelineApi(targetLeadId);
+        } catch {
+          // keep polling
+        }
+      }
+    }
+  };
 
   useEffect(() => {
     let isMounted = true;
@@ -677,8 +757,14 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
           setLead(fetchedLead);
           setCustomPersonalWebInput(fetchedLead.portfolioUrl || '');
 
-          if (fetchedLead.crawlStatus !== 'completed' || fetchedLead.status !== 'completed') {
-            void runAutoPipeline(fetchedLead._id);
+          // Leads saved before the pipeline fields existed have no stage; fall
+          // back to the old markers so they can still be picked up and finished.
+          const stage = (fetchedLead as LeadWithPipeline).pipelineStage;
+          const unfinished = stage
+            ? stage !== 'done'
+            : fetchedLead.status !== 'completed' || fetchedLead.crawlStatus !== 'completed';
+          if (unfinished) {
+            void watchPipeline(fetchedLead._id);
           }
         }
       } catch (err) {
@@ -689,110 +775,14 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
     }
 
     void init();
-    return () => { isMounted = false; };
+    const watcher = watchRef.current;
+    return () => {
+      isMounted = false;
+      watcher.stop = true;
+    };
+    // Re-running this per render would restart the watcher; it belongs to the lead id.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
-
-  const runAutoPipeline = async (targetLeadId: string) => {
-    setPipeline({
-      leadId: targetLeadId,
-      clientId: null,
-      clientName: null,
-      phase: 2,
-      running: true,
-      error: null,
-      mappedCompanies: null,
-      portfolioUrl: null,
-      crawledEmails: [],
-      crawledPhones: [],
-      verifiedEmails: [],
-      finalLead: null,
-    });
-
-    try {
-      const mapBody = await callPhase('map', { leadId: targetLeadId });
-      let mappedCompanies: CurrentCompanyItem[] | null = null;
-      let portfolioUrl: string | null = null;
-
-      await readStream(mapBody, (event, data) => {
-        const d = data as Record<string, unknown>;
-        if (event === 'mapped') {
-          mappedCompanies = (d.mappedCompanies ?? null) as CurrentCompanyItem[] | null;
-          portfolioUrl = (d.portfolioUrl ?? null) as string | null;
-        }
-      });
-
-      setPipeline((prev) => prev ? ({ ...prev, phase: 3, mappedCompanies, portfolioUrl }) : null);
-
-      const hasWebsitesToCrawl = (mappedCompanies as CurrentCompanyItem[] | null ?? []).some((c: CurrentCompanyItem) => Boolean(c.websiteUrl)) || !!portfolioUrl;
-
-      if (hasWebsitesToCrawl) {
-        const crawlBody = await callPhase('crawl', { leadId: targetLeadId });
-        let crawledEmails: string[] = [];
-        let crawledPhones: string[] = [];
-
-        await readStream(crawlBody, (event, data) => {
-          const d = data as Record<string, unknown>;
-          if (event === 'phase_done' && (d.step as number) === 3) {
-            crawledEmails = (d.emails ?? []) as string[];
-            crawledPhones = (d.phones ?? []) as string[];
-          }
-          if (event === 'crawled') {
-            crawledEmails = [...new Set([...crawledEmails, ...((d.emails ?? []) as string[])])];
-            crawledPhones = [...new Set([...crawledPhones, ...((d.phones ?? []) as string[])])];
-          }
-        });
-
-        setPipeline((prev) => prev ? ({ ...prev, phase: 4, crawledEmails, crawledPhones }) : null);
-
-        const verifyBody = await callPhase('verify', { leadId: targetLeadId });
-        await readStream(verifyBody, (event, data) => {
-          const d = data as Record<string, unknown>;
-          if (event === 'verified') {
-            setPipeline((prev) => prev ? ({
-              ...prev,
-              verifiedEmails: [...prev.verifiedEmails, { email: d.email as string, status: d.status as VerifiedEmailItem['status'] }],
-            }) : null);
-          }
-        });
-
-        // Phase 5: Generate Email Drafts (Always runs)
-        setPipeline((prev) => prev ? ({ ...prev, phase: 5 }) : null);
-        const generateBody = await callPhase('generate', { leadId: targetLeadId });
-        let finalLead: LeadIngestionRecord | null = null;
-        
-        await readStream(generateBody, (event, data) => {
-          if (event === 'done') finalLead = (data as Record<string, unknown>).result as LeadIngestionRecord;
-        });
-
-        if (finalLead) setLead(finalLead);
-        setPipeline((prev) => prev ? ({ ...prev, running: false, phase: 'done', finalLead }) : null);
-        showToast('Auto Pipeline completed successfully!', 'success');
-
-      } else {
-        // No websites to crawl — skip directly to verify & generate
-        setPipeline((prev) => prev ? ({ ...prev, phase: 4 }) : null);
-        
-        const verifyBody = await callPhase('verify', { leadId: targetLeadId });
-        await readStream(verifyBody, () => {});
-
-        setPipeline((prev) => prev ? ({ ...prev, phase: 5 }) : null);
-        const generateBody = await callPhase('generate', { leadId: targetLeadId });
-        let finalLead: LeadIngestionRecord | null = null;
-        
-        await readStream(generateBody, (event, data) => {
-          if (event === 'done') finalLead = (data as Record<string, unknown>).result as LeadIngestionRecord;
-        });
-
-        if (finalLead) setLead(finalLead);
-        setPipeline((prev) => prev ? ({ ...prev, running: false, phase: 'done', finalLead }) : null);
-        showToast('Auto Pipeline completed successfully!', 'success');
-      }
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : 'Pipeline failed';
-      setPipeline((p) => p ? ({ ...p, running: false, error: errMsg }) : null);
-      showToast(errMsg, 'error');
-    }
-  };
 
   // ── On-Demand Single Email Socket SMTP Verification Handler ─────────────────────
   const handleVerifySingleEmail = async (emailToVerify: string) => {
@@ -916,7 +906,7 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
       }));
 
       // 2. Purge targetEmail out of personal discoveredEmails
-      let updatedDiscovered = (lead?.discoveredEmails ?? []).filter((e) => e.toLowerCase() !== targetEmail);
+      const updatedDiscovered = (lead?.discoveredEmails ?? []).filter((e) => e.toLowerCase() !== targetEmail);
 
       // 3. Add to requested target container
       if (toContainer === 'personal') {
@@ -1190,7 +1180,7 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
             size="sm"
             variant="outline"
             disabled={!!pipeline?.running || isAnyCrawlActive}
-            onClick={() => { void runAutoPipeline(id); }}
+            onClick={() => { void watchPipeline(id); }}
             className="flex items-center gap-1.5 text-xs text-indigo-700 border-indigo-200 bg-indigo-50 hover:bg-indigo-100 font-bold disabled:opacity-40"
           >
             {pipeline?.running ? (
@@ -1210,6 +1200,26 @@ export default function ClientProfilePage({ params }: ClientPageProps) {
 
       {/* Step Progress Indicator */}
       <PhaseSteps phase={pipeline?.phase ?? 'done'} running={!!pipeline?.running} />
+
+      {lead?.extractionSource === 'regex_fallback' && (
+        <div role="alert" className="flex gap-2.5 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          <AlertTriangleIcon width={16} height={16} className="mt-0.5 shrink-0" />
+          <span>
+            AI extraction failed for this lead, so the text was read with the basic parser. Check the
+            details below before sending anything.
+          </span>
+        </div>
+      )}
+
+      {pipeline?.error && (
+        <div role="alert" className="flex flex-wrap items-center gap-2.5 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+          <AlertTriangleIcon width={16} height={16} className="shrink-0" />
+          <span className="min-w-0 flex-1">Processing stopped: {pipeline.error}</span>
+          <Button size="sm" variant="outline" onClick={() => { void watchPipeline(id); }}>
+            Retry processing
+          </Button>
+        </div>
+      )}
 
       {/* Candidate Profile Details & Summary */}
       <Card className="border border-indigo-200/90 shadow-sm bg-white overflow-hidden w-full">

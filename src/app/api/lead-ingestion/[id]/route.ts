@@ -5,6 +5,9 @@ import { verifyEmailSmtp } from '@/services/lead-ingestion/smtpVerifier';
 import { jsonError, jsonOk } from '@/lib/api/response';
 import mongoose from 'mongoose';
 
+// SMTP verification (DNS + socket handshake) runs inside PUT.
+export const maxDuration = 60;
+
 interface RouteParams {
   params: Promise<{ id: string }>;
 }
@@ -91,6 +94,10 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
           emailSubject: c.emailSubject ?? existing?.emailSubject ?? null,
           emailBody: c.emailBody ?? existing?.emailBody ?? null,
           approved: c.approved ?? existing?.approved ?? false,
+          // Campaign state belongs to the server: keep what is stored, never
+          // what the client sent, so a draft edit can't resurrect a sent email.
+          inCampaign: existing?.inCampaign ?? false,
+          campaignSendStatus: existing?.campaignSendStatus,
         };
       });
       doc.markModified('currentCompanies');
@@ -122,16 +129,26 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       }
     }
 
-    // ── Register company emails (non-blocking) ─────────────────────────────
+    // ── Verify company emails over SMTP (same check as personal ones) ──────
     if (body.verifyCompanyEmails && body.verifyCompanyEmails.length > 0) {
-      body.verifyCompanyEmails.forEach((emailRaw) => {
+      for (const emailRaw of body.verifyCompanyEmails) {
         const emailClean = emailRaw.trim().toLowerCase();
-        if (!emailClean.includes('@')) return;
-        const existingIndex = doc.verifiedEmails.findIndex((v) => v.email === emailClean);
-        if (existingIndex === -1) {
-          doc.verifiedEmails.push({ email: emailClean, status: 'pending' });
+        if (!emailClean.includes('@')) continue;
+
+        let status: VerifiedEmailItem['status'] = 'unknown';
+        try {
+          status = (await verifyEmailSmtp(emailClean)).status;
+        } catch {
+          status = 'unknown';
         }
-      });
+
+        const existingIndex = doc.verifiedEmails.findIndex((v) => v.email.toLowerCase() === emailClean);
+        if (existingIndex !== -1) {
+          doc.verifiedEmails[existingIndex].status = status;
+        } else {
+          doc.verifiedEmails.push({ email: emailClean, status });
+        }
+      }
     }
 
     // ── Replace discoveredEmails (personal pool) directly ───────────────────

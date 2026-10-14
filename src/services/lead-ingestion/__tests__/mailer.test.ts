@@ -1,5 +1,4 @@
 import { sendOutboundEmail } from '../mailer';
-import nodemailer from 'nodemailer';
 
 const mockSendMail = jest.fn();
 

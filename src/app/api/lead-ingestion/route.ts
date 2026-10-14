@@ -1,26 +1,6 @@
 import { type NextRequest } from 'next/server';
-import { createAndProcessLead, getIngestedLeads } from '@/services/lead-ingestion/ingestionService';
+import { getIngestedLeads } from '@/services/lead-ingestion/ingestionService';
 import { jsonError, jsonOk } from '@/lib/api/response';
-
-export const maxDuration = 60;
-
-export async function POST(request: NextRequest) {
-  try {
-    const body = (await request.json()) as { clientId?: string; content?: string };
-    const contentText = body?.content || body?.clientId || '';
-    if (!contentText.trim()) {
-      return jsonError('Missing required "content" field', 422);
-    }
-
-    const results = await createAndProcessLead(body.clientId, contentText);
-    return jsonOk({ results }, 201);
-  } catch (error) {
-    return jsonError(
-      error instanceof Error ? error.message : 'Failed to ingest lead',
-      500
-    );
-  }
-}
 
 export async function GET(request: NextRequest) {
   try {

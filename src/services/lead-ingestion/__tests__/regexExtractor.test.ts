@@ -30,10 +30,13 @@ describe('regexExtractor', () => {
 
   it('returns nulls for empty text', () => {
     const result = extractWithRegex('');
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       fullName: null,
       email: null,
       websiteUrl: null,
+      companyName: null,
+      jobTitle: null,
+      allUrls: [],
     });
   });
 

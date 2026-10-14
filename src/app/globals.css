@@ -89,4 +89,15 @@ body {
   .animate-slide-in {
     animation: none;
   }
+
+  /* Spinners still need to read as "busy", so slow them down instead of
+     stopping them: a frozen spinner looks like a hung page. */
+  .animate-spin {
+    animation-duration: 3s;
+  }
+
+  * {
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

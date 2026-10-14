@@ -65,9 +65,19 @@ const BASE = process.env.NEXT_PUBLIC_API_URL || '/api';
 async function handle<T>(res: Response): Promise<T> {
   if (!res.ok) {
     const d = await res.json().catch(() => ({})) as { message?: string; error?: string };
-    throw new Error(d.message ?? d.error ?? `HTTP ${res.status}`);
+    throw new ApiError(d.message ?? d.error ?? `HTTP ${res.status}`, res.status);
   }
   return res.json() as Promise<T>;
+}
+
+/** Thrown by the API wrappers so callers can react to specific statuses (e.g. 409). */
+export class ApiError extends Error {
+  status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+  }
 }
 
 export async function getClientsApi(): Promise<{ clients: ClientRecord[] }> {
@@ -123,6 +133,9 @@ export async function refineLeadEmailApi(
   }));
 }
 
+export type CampaignItemStatus = 'pending' | 'sending' | 'delivered' | 'failed' | 'opened';
+export type CampaignStatus = 'draft' | 'running' | 'completed' | 'paused';
+
 export interface CampaignItemRecord {
   _id: string;
   leadId: string;
@@ -133,27 +146,75 @@ export interface CampaignItemRecord {
   recipientEmail: string;
   subject: string;
   bodyHtml: string;
-  status: 'pending' | 'sending' | 'delivered' | 'failed' | 'opened';
+  status: CampaignItemStatus;
   errorMessage?: string | null;
+  attempts?: number;
+  sendingStartedAt?: string | null;
   sentAt?: string | null;
   openedAt?: string | null;
   failedAt?: string | null;
 }
 
-export interface CampaignRecord {
+/** A campaign as the list endpoint returns it: counts only, no items. */
+export interface CampaignSummaryRecord {
   _id: string;
   name: string;
-  status: 'draft' | 'running' | 'completed' | 'paused';
+  status: CampaignStatus;
   totalEmails: number;
+  /** Delivered + opened. Failures are not counted. */
   sentCount: number;
   deliveredCount: number;
-  failedCount: number;
   openedCount: number;
+  failedCount: number;
+  pendingCount: number;
+  sendingCount: number;
   minDelaySeconds: number;
   maxDelaySeconds: number;
+  /** True while a browser tab is actively driving this campaign. */
+  isRunnerActive: boolean;
+  activeRunnerId: string | null;
+  lastDispatchAt: string | null;
+  runnerHeartbeatAt: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
+export interface CampaignRecord extends CampaignSummaryRecord {
   items: CampaignItemRecord[];
-  createdAt: string;
-  updatedAt: string;
+}
+
+export type CampaignSortField =
+  | 'createdAt'
+  | 'updatedAt'
+  | 'name'
+  | 'totalEmails'
+  | 'deliveredCount'
+  | 'failedCount'
+  | 'openedCount'
+  | 'status';
+
+export interface CampaignListResponse {
+  campaigns: CampaignSummaryRecord[];
+  total: number;
+  page: number;
+  limit: number;
+  pages: number;
+  hasMore: boolean;
+  sort: CampaignSortField;
+  order: 'asc' | 'desc';
+  openTrackingEnabled: boolean;
+}
+
+export interface DispatchBatchResponse {
+  processedCount: number;
+  successCount: number;
+  failedCount: number;
+  /** Items still eligible for the mode that was requested (pending, plus failed when retrying). */
+  remainingCount: number;
+  pendingCount: number;
+  message?: string;
+  item?: CampaignItemRecord;
+  campaign: CampaignRecord;
 }
 
 export async function updateLeadDetailsApi(
@@ -172,13 +233,25 @@ export async function updateLeadDetailsApi(
   }));
 }
 
-export async function getCampaignsApi(params?: { page?: number; limit?: number; search?: string; status?: string }): Promise<{ campaigns: CampaignRecord[]; total: number; page: number; pages: number; hasMore: boolean }> {
+export async function getCampaignsApi(
+  params?: {
+    page?: number;
+    limit?: number;
+    search?: string;
+    status?: string;
+    sort?: CampaignSortField;
+    order?: 'asc' | 'desc';
+  },
+  init?: { signal?: AbortSignal }
+): Promise<CampaignListResponse> {
   const q = new URLSearchParams();
   if (params?.page) q.set('page', params.page.toString());
   if (params?.limit) q.set('limit', params.limit.toString());
   if (params?.search) q.set('search', params.search);
   if (params?.status) q.set('status', params.status);
-  return handle(await fetch(`${BASE}/campaigns?${q.toString()}`, { cache: 'no-store' }));
+  if (params?.sort) q.set('sort', params.sort);
+  if (params?.order) q.set('order', params.order);
+  return handle(await fetch(`${BASE}/campaigns?${q.toString()}`, { cache: 'no-store', signal: init?.signal }));
 }
 
 export async function createCampaignApi(data: {
@@ -204,11 +277,23 @@ export async function createCampaignApi(data: {
   }));
 }
 
-export async function getCampaignDetailsApi(id: string): Promise<{ campaign: CampaignRecord }> {
-  return handle(await fetch(`${BASE}/campaigns/${id}`, { cache: 'no-store' }));
+export async function getCampaignDetailsApi(
+  id: string,
+  init?: { signal?: AbortSignal }
+): Promise<{ campaign: CampaignRecord; openTrackingEnabled: boolean }> {
+  return handle(await fetch(`${BASE}/campaigns/${id}`, { cache: 'no-store', signal: init?.signal }));
 }
 
-export async function updateCampaignApi(id: string, updates: Partial<CampaignRecord>): Promise<{ campaign: CampaignRecord }> {
+export interface CampaignUpdate {
+  name?: string;
+  /** `running` is set by the dispatch route only. */
+  status?: 'draft' | 'paused' | 'completed';
+  minDelaySeconds?: number;
+  maxDelaySeconds?: number;
+  runnerId?: string;
+}
+
+export async function updateCampaignApi(id: string, updates: CampaignUpdate): Promise<{ campaign: CampaignRecord }> {
   return handle(await fetch(`${BASE}/campaigns/${id}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
@@ -216,17 +301,18 @@ export async function updateCampaignApi(id: string, updates: Partial<CampaignRec
   }));
 }
 
-export async function deleteCampaignApi(id: string): Promise<{ message: string }> {
-  return handle(await fetch(`${BASE}/campaigns/${id}`, { method: 'DELETE' }));
+export async function deleteCampaignApi(
+  id: string,
+  options?: { force?: boolean }
+): Promise<{ message: string; releasedDrafts: number }> {
+  const q = options?.force ? '?force=true' : '';
+  return handle(await fetch(`${BASE}/campaigns/${id}${q}`, { method: 'DELETE' }));
 }
 
-export async function dispatchCampaignBatchApi(id: string, data?: { itemIds?: string[]; rerunFailed?: boolean }): Promise<{
-  processedCount: number;
-  successCount: number;
-  failedCount: number;
-  remainingCount: number;
-  campaign: CampaignRecord;
-}> {
+export async function dispatchCampaignBatchApi(
+  id: string,
+  data?: { itemIds?: string[]; rerunFailed?: boolean; runnerId?: string; takeover?: boolean }
+): Promise<DispatchBatchResponse> {
   return handle(await fetch(`${BASE}/campaigns/${id}/dispatch-batch`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -234,7 +320,6 @@ export async function dispatchCampaignBatchApi(id: string, data?: { itemIds?: st
   }));
 }
 
-/** An editable AI prompt (see src/services/prompts/definitions.ts). */
 export interface PromptRecord {
   key: string;
   title: string;
