@@ -157,3 +157,18 @@ describe('reading the failure', () => {
     expect(describeGroqKeys(SEVEN)[0].coolingDownFor).toBe(0);
   });
 });
+
+describe('a prompt that is too large', () => {
+  const TOO_LARGE =
+    '413 {"error":{"message":"Request too large for model `openai/gpt-oss-120b` on tokens per minute (TPM): Limit 8000, Requested 15000","code":"rate_limit_exceeded"}}';
+
+  it('is not blamed on the key', () => {
+    expect(classifyFailure(TOO_LARGE)).toBe('too_large');
+  });
+
+  it('leaves every key ready, because a smaller prompt would still work', () => {
+    noteKeyFailure('groq#1', new Error(TOO_LARGE));
+    expect(describeGroqKeys(SEVEN).every((k) => k.coolingDownFor === 0)).toBe(true);
+    expect(keysToTry(SEVEN).map((k) => k.id)).toEqual(['groq#1', 'groq#2', 'groq#3']);
+  });
+});

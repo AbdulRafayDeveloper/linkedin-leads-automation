@@ -109,9 +109,12 @@ function describeError(error: unknown): string {
   return typeof error === 'string' ? error : JSON.stringify(error ?? '');
 }
 
-export type KeyFailureKind = 'rate_limit' | 'auth' | 'other';
+export type KeyFailureKind = 'rate_limit' | 'auth' | 'too_large' | 'other';
 
 export function classifyFailure(message: string): KeyFailureKind {
+  // "Request too large" is about the prompt, not the key: every key would
+  // refuse it, so none of them is parked for it.
+  if (/\b413\b|request too large|reduce the length/i.test(message)) return 'too_large';
   if (/\b429\b|rate.?limit|too many requests/i.test(message)) return 'rate_limit';
   if (/\b401\b|\b403\b|invalid api key|unauthorized|authentication/i.test(message)) return 'auth';
   return 'other';
@@ -121,6 +124,11 @@ export function classifyFailure(message: string): KeyFailureKind {
 export function noteKeyFailure(id: string, error: unknown, now = Date.now()): void {
   const message = describeError(error);
   const kind = classifyFailure(message);
+
+  if (kind === 'too_large') {
+    console.error(`[groq] ${id} refused the prompt as too large; the key is still good. ${message.slice(0, 200)}`);
+    return;
+  }
 
   const wait =
     kind === 'rate_limit'
