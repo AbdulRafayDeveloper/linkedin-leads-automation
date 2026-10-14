@@ -35,6 +35,32 @@ interface DummyDataModalProps {
 
 type View = { mode: 'list' } | { mode: 'new' } | { mode: 'edit'; sample: SampleProfileRecord };
 
+// The pasted text starts with LinkedIn's own menu, which looks the same on
+// every profile. The card preview skips it so each sample shows its person.
+const CHROME_LINES = new Set([
+  '0 notifications',
+  "i'm looking for…",
+  'home',
+  'my network',
+  'jobs',
+  'messaging',
+  'notifications',
+  'me',
+  'for business',
+  'sales nav',
+  'cover photo',
+  '1',
+]);
+
+function previewOf(content: string, max = 420): string {
+  const lines = content
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !CHROME_LINES.has(line.toLowerCase()));
+  const text = lines.slice(0, 8).join('\n');
+  return text.length > max ? `${text.slice(0, max).trimEnd()}…` : text;
+}
+
 async function copyToClipboard(text: string): Promise<boolean> {
   try {
     await navigator.clipboard.writeText(text);
@@ -259,8 +285,7 @@ export default function DummyDataModal({ open, onClose, onUse }: DummyDataModalP
                 </div>
 
                 <pre className="mt-2 max-h-40 flex-1 overflow-hidden rounded-md bg-slate-50 p-3 text-[11px] leading-5 whitespace-pre-wrap text-slate-600">
-                  {sample.content.slice(0, 600)}
-                  {sample.content.length > 600 ? '…' : ''}
+                  {previewOf(sample.content)}
                 </pre>
 
                 <div className="mt-3 flex flex-wrap items-center gap-2">

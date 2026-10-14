@@ -133,6 +133,32 @@ describe('Dummy data dialog', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent(/could not reach the server/i);
   });
 
+  it('skips the LinkedIn menu in the card preview so each sample shows its person', async () => {
+    listSamplesApi.mockResolvedValue([
+      {
+        id: 'sx',
+        title: 'With chrome',
+        content: `0 notifications
+
+I'm looking for…
+Home
+My Network
+
+Mark Allen
+· 2nd
+DevOps Engineer and Evangelist
+Garden Bay, British Columbia, Canada`,
+        updatedAt: '2026-10-14T10:00:00.000Z',
+      },
+    ]);
+    openModal();
+
+    const preview = await screen.findByText(/DevOps Engineer and Evangelist/);
+    expect(preview).toBeInTheDocument();
+    expect(preview.textContent).not.toMatch(/My Network/);
+    expect(preview.textContent).toMatch(/Mark Allen/);
+  });
+
   it('explains the empty state', async () => {
     listSamplesApi.mockResolvedValue([]);
     openModal();
