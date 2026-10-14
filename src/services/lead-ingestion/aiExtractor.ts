@@ -281,11 +281,18 @@ ${rawText}
         rawText
       );
     } catch (err) {
-      errors.push(err instanceof Error ? err.message : String(err));
+      const message = err instanceof Error ? err.message : String(err);
+      // Logged per model: a silent fallback used to hide rate limits and
+      // truncated answers behind "the basic parser read this".
+      console.error('[aiExtractor] extraction attempt failed:', message);
+      errors.push(message);
     }
   }
 
   // Resilient Fallback: Use Regex Extractor if LLM calls fail so ingestion never breaks!
+  console.error(
+    `[aiExtractor] every model failed for a ${rawText.length}-character profile; using the regex parser. Reasons: ${errors.join(' | ')}`
+  );
   const { extractWithRegex } = await import('./regexExtractor');
   const reg = extractWithRegex(rawText);
 
