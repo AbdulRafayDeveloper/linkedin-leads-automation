@@ -160,7 +160,7 @@ Order of checks: syntax → local disposable-domain list → free disposable-che
 
 | Var | Used by |
 |---|---|
-| `MONGODB_URI` (required), `MONGODB_DATABASE` (code default `leads`), `MONGODB_TIMEOUT_MS` | `lib/db/connection.ts`. **The real database is `leads-automation`, the same one production uses; local must use it too.** The `dbName` option overrides the database in the URI path, so keep the two in sync. The old `leads` database on the same cluster is unused: its data was copied into `leads-automation` on 2026-09-14. |
+| `MONGODB_URI` (required), `MONGODB_DATABASE`, `MONGODB_TIMEOUT_MS` | `lib/db/connection.ts`. **Production and local both use the `leads` database** (checked against the deployed site on 2026-10-14: 55 leads, 7 campaigns). The `dbName` option overrides the database in the URI path, so keep the two in sync — a mismatch is why the app once showed a different set of leads locally than live. `leads-automation` on the same cluster is an older copy and is not used; it still holds 31 leads from 2026-09-01/02 that were never in production. |
 | `GROQ_API_KEY`, `GROQ_MODEL` | AI (primary) |
 | `OPENAI_API_KEY`, `OPENAI_MODEL` (default `gpt-4o-mini`) | AI fallback / `AI_PROVIDER=openai` |
 | `AI_PROVIDER` (`groq`\|`openai`\|`ollama`), `OLLAMA_BASE_URL`, `OLLAMA_MODEL` | `getChatModel()` only |
