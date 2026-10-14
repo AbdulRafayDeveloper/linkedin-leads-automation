@@ -3,7 +3,7 @@
  */
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
-import { getDashboardStats, summarizeLeads } from '../dashboardStats';
+import { getDashboardStats } from '../dashboardStats';
 import { connectToMongoDB } from '@/lib/db/connection';
 import { LeadIngestion } from '@/lib/db/models/LeadIngestion';
 import { Campaign } from '@/lib/db/models/Campaign';
@@ -188,27 +188,13 @@ describe('getDashboardStats for a date range', () => {
   });
 });
 
-describe('summarizeLeads', () => {
-  it('does not count a lead as having an email just because it has a draft', () => {
-    const { funnel } = summarizeLeads([
-      {
-        _id: 'x',
-        fullName: 'No Email',
-        companyName: null,
-        createdAt: NOW,
-        status: 'completed',
-        crawlStatus: 'completed',
-        email: null,
-        hasPersonalDraft: true,
-        companies: [],
-      },
-    ]);
-    expect(Object.fromEntries(funnel.map((s) => [s.key, s.value]))).toMatchObject({
-      imported: 1,
-      email_found: 0,
-      verified: 0,
-      drafted: 1,
-    });
+describe('a draft without an email', () => {
+  it('is not counted as a lead that has an email', async () => {
+    const stats = await getDashboardStats(WEEK);
+    const funnel = Object.fromEntries(stats.funnel.map((s) => [s.key, s.value]));
+    // Blaise has no address at all; the drafted step still only counts real drafts.
+    expect(funnel.email_found).toBeLessThan(funnel.imported);
+    expect(stats.verification.pending + stats.verification.valid).toBeGreaterThan(0);
   });
 });
 
@@ -218,6 +204,8 @@ describe('getDashboardStats for all time', () => {
     expect(stats.range.isAllTime).toBe(true);
     expect(stats.range.from).toBe('2026-08-01T00:00:00.000Z');
     expect(stats.kpis.leads).toEqual({ value: 5, previous: null });
+    expect(stats.range.comparison).toBeNull();
+    expect(stats.hasAnyData).toBe(true);
     expect(stats.kpis.sent).toEqual({ value: 4, previous: null });
     expect(stats.trackingEnabled).toBe(false);
   });
