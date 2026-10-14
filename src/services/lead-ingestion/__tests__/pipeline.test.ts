@@ -185,12 +185,15 @@ describe('runIngestionPipeline', () => {
       portfolioUrl: null,
     });
     const { runIngestionPipeline } = await import('../pipeline');
+    const { LeadIngestion } = await import('@/lib/db/models/LeadIngestion');
     const lead = await makeLead({ currentCompanies: [{ companyName: 'Solstice Robotics', jobTitle: 'VP', websiteUrl: null, summary: '', companyEmails: [] }] });
 
     const result = await runIngestionPipeline(lead._id.toString());
 
     expect(result.stage).toBe('done');
     expect(findEmailsOnWebsite).not.toHaveBeenCalled();
+    const saved = await LeadIngestion.findById(lead._id);
+    expect(saved!.crawlStatus).toBe('completed');
   });
 
   it('never crawls a private or local address from a pasted profile', async () => {

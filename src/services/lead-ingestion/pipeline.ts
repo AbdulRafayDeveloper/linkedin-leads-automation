@@ -306,7 +306,12 @@ export async function runIngestionPipeline(leadId: string): Promise<PipelineRunR
       await setStage(leadId, 'crawling');
       const hasSomethingToCrawl =
         (lead.currentCompanies ?? []).some((c) => !!c.websiteUrl) || !!lead.portfolioUrl;
-      if (hasSomethingToCrawl) await crawlLeadWebsites(await reload());
+      if (hasSomethingToCrawl) {
+        await crawlLeadWebsites(await reload());
+      } else {
+        // Nothing to crawl is a finished crawl, not a crawl waiting to start.
+        await LeadIngestion.updateOne({ _id: leadId }, { $set: { crawlStatus: 'completed' } });
+      }
     }
 
     await setStage(leadId, 'verifying');
